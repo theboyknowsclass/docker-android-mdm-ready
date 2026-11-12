@@ -128,6 +128,7 @@ patch_imei() {
 # and as the raw EF_ICCID read, which is BCD with the digits of each byte swapped.
 patch_sim() {
     local f
+    [ "${SKIP_SIM_PATCH:-0}" = 1 ] && { log "SIM profile left as is (SKIP_SIM_PATCH=1)"; return 0; }
     [ -f "$ICC_PROFILE" ] || { log "WARNING: no SIM profile at $ICC_PROFILE; IMSI/ICCID not applied"; return 0; }
     for f in "$ICC_PROFILE" $(find "$ANDROID_AVD_HOME" -name 'iccprofile_for_sim0.xml' 2>/dev/null); do
         [ -f "$f.mdmr-orig" ] || cp -p "$f" "$f.mdmr-orig"
@@ -459,6 +460,12 @@ cmd_ids() {
     $A logcat -d -b radio > "$OUT/radio.txt" 2>&1
     radio=$(cat "$OUT/radio.txt" "$OUT/phone.txt" "$OUT/iphonesubinfo.txt")
     log "reported: serial=$serial mac=$mac"
+    log "props: $($A shell getprop | grep -E 'gsm\.(sim|operator|version\.ril)|ril\.|modem' | tr -d '\r' | tr '\n' ' ' | cut -c1-600)"
+    $A shell getprop > "$OUT/getprop.txt" 2>&1
+    $A logcat -d > "$OUT/logcat.txt" 2>&1
+    for t in 1 2 3 4 5 6 7 8 9 10; do
+        log "iphonesubinfo $t: $($A shell service call iphonesubinfo $t s16 com.android.shell 2>/dev/null | tr -d '\r\n' | cut -c1-160)"
+    done
     log "siminfo: $sim"
     check() { if [ "$2" = 1 ]; then log "$1 OK"; else log "$1 NOT applied"; ok=1; fi; }
     check serial "$([ "$serial" = "$DEVICE_SERIAL" ] && echo 1)"
