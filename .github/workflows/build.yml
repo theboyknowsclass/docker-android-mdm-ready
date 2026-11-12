@@ -67,3 +67,16 @@ jobs:
           docker tag mdm-emu:ready "$IMG:${GITHUB_SHA::7}"
           docker push "$IMG:latest"
           docker push "$IMG:${GITHUB_SHA::7}"
+
+      - name: Push to Docker Hub (only when DOCKERHUB_USERNAME and DOCKERHUB_TOKEN secrets are set)
+        env:
+          DH_USER: ${{ secrets.DOCKERHUB_USERNAME }}
+          DH_TOKEN: ${{ secrets.DOCKERHUB_TOKEN }}
+        run: |
+          if [ -z "$DH_USER" ] || [ -z "$DH_TOKEN" ]; then echo "no Docker Hub secrets, skipped"; exit 0; fi
+          echo "$DH_TOKEN" | docker login -u "$DH_USER" --password-stdin
+          IMG="docker.io/$DH_USER/${GITHUB_REPOSITORY#*/}"
+          docker tag mdm-emu:ready "$IMG:latest"
+          docker tag mdm-emu:ready "$IMG:${GITHUB_SHA::7}"
+          docker push "$IMG:latest"
+          docker push "$IMG:${GITHUB_SHA::7}"
