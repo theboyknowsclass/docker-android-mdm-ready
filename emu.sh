@@ -107,8 +107,8 @@ pick_ids() {
 ipv6_for_modem() {
     has_v6() { grep -vqE '^(0{31}1|fe80) ' /proc/net/if_inet6 2>/dev/null && grep -vE '^(0{31}1|fe80)' /proc/net/if_inet6 | grep -q .; }
     has_v6 && return 0
-    echo 0 > /proc/sys/net/ipv6/conf/all/disable_ipv6 2>/dev/null
-    echo 0 > /proc/sys/net/ipv6/conf/lo/disable_ipv6 2>/dev/null
+    { echo 0 > /proc/sys/net/ipv6/conf/all/disable_ipv6; } 2>/dev/null
+    { echo 0 > /proc/sys/net/ipv6/conf/lo/disable_ipv6; } 2>/dev/null
     ip -6 addr add fd6d:646d:7264::1/128 dev lo 2>/dev/null
     has_v6 && { log "IPv6 address added for the emulator modem"; return 0; }
     log "WARNING: no usable IPv6, so no SIM, IMEI or phone number. Run with --cap-add NET_ADMIN --sysctl net.ipv6.conf.all.disable_ipv6=0"
@@ -124,9 +124,9 @@ patch_imei() {
             case $f in *.mdmr-orig) continue ;; esac
             [ -f "$f.mdmr-orig" ] || cp -p "$f" "$f.mdmr-orig"
             found="$found $f"
-        done < <(grep -rlaF "$def" "$EMU_DIR/qemu" 2>/dev/null)
+        done < <({ grep -rlaF "$def" "$EMU_DIR/qemu"; find "$ANDROID_AVD_HOME" -type f -size -2M -exec grep -laF "$def" {} +; } 2>/dev/null)
     done
-    for f in $(find "$EMU_DIR/qemu" -name '*.mdmr-orig' 2>/dev/null); do
+    for f in $(find "$EMU_DIR/qemu" "$ANDROID_AVD_HOME" -name '*.mdmr-orig' 2>/dev/null); do
         cp -p "$f" "${f%.mdmr-orig}"
         for def in $IMEI_DEFAULTS; do
             DEF=$def NEW=$DEVICE_IMEI perl -pi -e 's/\Q$ENV{DEF}\E/$ENV{NEW}/g' "${f%.mdmr-orig}"
@@ -136,7 +136,7 @@ patch_imei() {
     if [ -z "$found" ]; then
         log "WARNING: no built-in IMEI found under $EMU_DIR; DEVICE_IMEI not applied"
     else
-        log "IMEI patched in:$(tr ' ' '\n' <<<"$found" | sort -u | tr '\n' ' ')"
+        log "IMEI patched in:$(tr ' ' '\n' <<<"$found" | sort -u | grep -v qemu-system | tr '\n' ' ') + qemu binaries"
     fi
 }
 
@@ -261,7 +261,7 @@ start_emu() {
     # the kernel command line, which init reads before the emulator's bootconfig.
     setsid nohup emulator -avd "$AVD" -writable-system $window -no-audio -no-boot-anim \
         -no-snapshot-load -no-snapshot-save -gpu swiftshader_indirect -accel on \
-        -camera-back "$cam" -phone-number "$DEVICE_PHONE" -modem-simulator-port "$MODEM_PORT" \
+        -camera-back "$cam" -phone-number "${DEVICE_PHONE#+}" -modem-simulator-port "$MODEM_PORT" \
         -qemu -append "androidboot.serialno=$DEVICE_SERIAL" \
         > /tmp/emulator.log 2>&1 < /dev/null &
     if ! wait_boot; then
@@ -533,8 +533,9 @@ PY2
         r=$($A shell service call iphonesubinfo $t s16 root 2>/dev/null | grep -oE "'[^']*'" | tr -d "'.[:space:]")
         [ -n "$r" ] && log "iphonesubinfo $t (root): $r"
     done
-    check imei "$(grep -q "$DEVICE_IMEI" <<<"$radio $at_imei" && echo 1)"
-    check imsi "$(grep -q "$DEVICE_IMSI" <<<"$radio$($A shell service call iphonesubinfo 7 s16 com.android.shell 2>/dev/null | grep -oE "'[^']*'" | tr -d "'.[:space:]")" && echo 1)"
+    check imei "$(grep -q "$DEVICE_IMEI" <<<"$at_imei $($A shell service call iphonesubinfo 1 s16 root 2>/dev/null | grep -oE "'[^']*'" | tr -d "'.[:space:]")" && echo 1)"
+    log "AVD files: $(find "$ANDROID_AVD_HOME" -type f -size -2M | sed "s#$ANDROID_AVD_HOME/##" | tr '\n' ' ' | cut -c1-600)"
+    check imsi "$(grep -q "$DEVICE_IMSI" <<<"$radio$($A shell service call iphonesubinfo 8 s16 root 2>/dev/null | grep -oE "'[^']*'" | tr -d "'.[:space:]")" && echo 1)"
     check ssaid_key "$($A shell grep -c "$DEVICE_SSAID_KEY" /data/system/users/0/settings_ssaid.xml 2>/dev/null | tr -d '\r' | grep -q '^[1-9]' && echo 1)"
     stop_emu
     return $ok
