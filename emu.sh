@@ -239,9 +239,12 @@ start_emu() {
     patch_sim
     adb start-server >/dev/null 2>&1
     log "booting $AVD, back camera $cam"
+    # Serial: -android-serialno aborts in emulator 37.2 (its own check regex is invalid), so it goes on
+    # the kernel command line, which init reads before the emulator's bootconfig.
     setsid nohup emulator -avd "$AVD" -writable-system $window -no-audio -no-boot-anim \
         -no-snapshot-load -no-snapshot-save -gpu swiftshader_indirect -accel on \
-        -camera-back "$cam" -android-serialno "$DEVICE_SERIAL" -phone-number "$DEVICE_PHONE" \
+        -camera-back "$cam" -phone-number "$DEVICE_PHONE" \
+        -qemu -append "androidboot.serialno=$DEVICE_SERIAL" \
         > /tmp/emulator.log 2>&1 < /dev/null &
     if ! wait_boot; then
         tail -20 /tmp/emulator.log
