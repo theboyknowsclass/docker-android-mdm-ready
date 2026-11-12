@@ -533,6 +533,13 @@ print(buf.decode(errors="replace").replace("\r", " ").replace("\n", " "))
 PY2
 )
     log "modem AT+CGSN: $at_imei"
+    local qexe
+    qexe=$(readlink -f /proc/$(pgrep -f qemu-system | head -1)/exe 2>/dev/null)
+    log "qemu running: $qexe; defaults left in it: $(for d in $IMEI_DEFAULTS; do echo -n "$d=$(grep -caF "$d" "$qexe") "; done) new=$(grep -caF "$DEVICE_IMEI" "$qexe")"
+    log "AVD modem files: $(find "$ANDROID_AVD_HOME" -path '*modem*' -type f | tr '\n' ' ')"
+    log "IMEI defaults in AVD modem files: $(grep -rlaE "$(tr ' ' '|' <<<"$IMEI_DEFAULTS")" "$ANDROID_AVD_HOME"/*/modem_simulator 2>/dev/null | tr '\n' ' ')"
+    log "IMEI defaults in system image: $(grep -rlaE "$(tr ' ' '|' <<<"$IMEI_DEFAULTS")" "$SYSIMG_DIR/data" 2>/dev/null | tr '\n' ' ')"
+    grep -raoE ".{0,80}($(tr ' ' '|' <<<"$IMEI_DEFAULTS")).{0,40}" "$ANDROID_AVD_HOME"/*/modem_simulator 2>/dev/null | head -5
     for t in 1 2 3 4 5 6 7 8 9 10 11 12; do
         local r
         r=$($A shell service call iphonesubinfo $t s16 root 2>/dev/null | grep -oE "'[^']*'" | tr -d "'.[:space:]")
