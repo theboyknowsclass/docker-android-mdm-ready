@@ -249,6 +249,13 @@ start_emu() {
         > /tmp/emulator.log 2>&1 < /dev/null &
     if ! wait_boot; then
         tail -20 /tmp/emulator.log
+        # the emulator segfaults now and then on CI runners; one more go
+        if [ "${EMU_RETRY:-0}" = 0 ]; then
+            log "emulator did not boot, retrying once"
+            stop_emu
+            EMU_RETRY=1 start_emu
+            return
+        fi
         log "emulator did not boot"
         exit 3
     fi
@@ -283,9 +290,8 @@ serve_agent() {
 reset_device() {
     log "reset to un-set-up"
     $A shell pm clear "$SETUPWIZARD" >/dev/null 2>&1
-    # stop the framework first, so system_server cannot write its settings back before the restart
-    $A shell stop
-    sleep 3
+    # The emulator is killed straight after (no clean shutdown), so system_server gets no chance to
+    # write its settings back. Stopping the framework first crashed the emulator on CI runners.
     $A shell 'rm -f /data/system/users/0/settings_global.xml /data/system/users/0/settings_secure.xml /data/system/users/0/settings_system.xml /data/system/users/0/settings_ssaid.xml /data/system/device_policies.xml /data/system/device_policy_state.xml /data/system/device_owner_2.xml'
     write_ssaid
     restart_emu
@@ -305,7 +311,16 @@ reset_device() {
     local p
     p=$($A shell settings get global device_provisioned | tr -d '\r')
     log "device_provisioned=$p"
-    [ "$p" = 0 ] || { log "device still marked provisioned (was bake run?)"; exit 3; }
+    if [ "$p" != 0 ]; then
+        # the emulator can die mid-reset on CI runners; one more go
+        if [ "${RESET_RETRY:-0}" = 0 ]; then
+            log "device still marked provisioned, resetting again"
+            RESET_RETRY=1 reset_device
+            return
+        fi
+        log "device still marked provisioned (was bake run?)"
+        exit 3
+    fi
 }
 
 # Reads the DPC component from a QR json file into DPC, in dumpsys form (package/full.class.Name).
