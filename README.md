@@ -63,8 +63,14 @@ Each container start gets a new random identity, so every run enrols as a new de
 | `DEVICE_SERIAL` | 1-20 letters/digits (`Build.getSerial()`, `ro.serialno`) | `MDMR` + 12 hex |
 | `DEVICE_IMEI` | 15 digits | `35` + 12 random + Luhn check digit |
 | `DEVICE_SSAID_KEY` | 64 hex | random |
+| `DEVICE_PHONE` | SIM phone number, 3-15 digits, optional `+` | `1555` + 7 digits |
+| `DEVICE_IMSI` | 15 digits | `310260` + 9 digits (keeps the emulator's MCC 310 / MNC 260) |
+| `DEVICE_ICCID` | 19-20 digits | `8901` + 15 digits + Luhn check digit |
+| `DEVICE_WIFI_MAC` | `aa:bb:cc:dd:ee:ff` | `02:` + 5 random bytes (locally administered) |
 
 On Android 8+ `ANDROID_ID` differs per app; Android derives it from `DEVICE_SSAID_KEY`, so the same key and the same app give the same `ANDROID_ID`.
+
+The container logs the identity it used at start (`identity: ...`). `docker run ... ids` boots, applies it and checks each value against what Android reports.
 
 ### Several devices
 
