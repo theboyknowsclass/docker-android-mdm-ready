@@ -181,6 +181,34 @@ set_wifi_mac() {
     sleep 3
 }
 
+# Android 14 asks the guest radio HAL for the IMEI (DEVICE_IMEI), and the emulator's RIL libraries
+# answer from a built-in value instead of asking the modem. Patch them on the (remounted) vendor
+# partition; originals are kept in the container under $MT/vendor-orig.
+patch_guest_imei() {
+    local lib out
+    $A remount >/dev/null 2>&1 || { log "WARNING: remount failed; Android will report the default IMEI"; return 0; }
+    mkdir -p "$MT/vendor-orig"
+    for lib in libcuttlefish-ril-2.so libril-modem-lib.so; do
+        [ -f "$MT/vendor-orig/$lib" ] || $A pull "/vendor/lib64/$lib" "$MT/vendor-orig/$lib" >/dev/null 2>&1 || continue
+        out=$(python3 - "$MT/vendor-orig/$lib" "/tmp/$lib" "$DEVICE_IMEI" <<'PY2'
+import sys
+src, dst, imei = sys.argv[1:4]
+b = open(src, "rb").read()
+counts = []
+for old, new in ((b"867400022047199", imei), (b"358240051111110", imei),
+                 (b"86740002", imei[:8]), (b"22047199", imei[7:])):
+    counts.append("%s=%d" % (old.decode(), b.count(old)))
+    b = b.replace(old, new.encode())
+open(dst, "wb").write(b)
+print(" ".join(counts))
+PY2
+) || { log "IMEI patch failed for $lib"; continue; }
+        $A push "/tmp/$lib" "/vendor/lib64/$lib" >/dev/null 2>&1 \
+            && $A shell "chmod 644 /vendor/lib64/$lib; chown root:root /vendor/lib64/$lib; restorecon /vendor/lib64/$lib" \
+            && log "IMEI patched in guest $lib: $out"
+    done
+}
+
 # Android derives each app's ANDROID_ID from a per-user key in settings_ssaid.xml. Writing a new key
 # (text XML; Android reads text and binary XML) and dropping the per-app entries gives new IDs.
 write_ssaid() {
@@ -316,6 +344,7 @@ reset_device() {
     # write its settings back. Stopping the framework first crashed the emulator on CI runners.
     $A shell 'rm -f /data/system/users/0/settings_global.xml /data/system/users/0/settings_secure.xml /data/system/users/0/settings_system.xml /data/system/users/0/settings_ssaid.xml /data/system/device_policies.xml /data/system/device_policy_state.xml /data/system/device_owner_2.xml'
     write_ssaid
+    patch_guest_imei
     restart_emu
     if [ -n "$DPC" ]; then
         $A shell pm uninstall "${DPC%%/*}" >/dev/null 2>&1
@@ -513,23 +542,6 @@ except Exception:
 print(buf.decode(errors="replace").split()[0] if buf.split() else "")
 PY2
 )
-    if [ "$imei" != "$DEVICE_IMEI" ]; then
-        log "IMEI diag: guest files with a default IMEI: $($A shell "grep -rlaE '867400022047199|358240051111110' /vendor/lib64 /vendor/bin /vendor/etc /system/lib64/libril* 2>/dev/null" | tr -d '\r' | tr '\n' ' ')"
-        $A logcat -d -b radio 2>/dev/null | grep -iE "imei|CGSN|DEVICE_IDENTITY|GET_IMEI|baseband" | head -15 | cut -c1-200
-        for c in "AT+CGSN=1" "AT+CGSN=2" "AT+CIMI" "AT+WRMP?"; do
-            log "modem $c: $(python3 -c "
-import socket,sys,time
-s=socket.create_connection(('::1',$MODEM_PORT),timeout=5);s.sendall(b'$c\\r');time.sleep(2);s.settimeout(2)
-b=b''
-try:
-  while True:
-    d=s.recv(4096)
-    if not d: break
-    b+=d
-except Exception: pass
-print(b.decode(errors='replace').replace('\\r',' ').replace('\\n',' '))" 2>&1)"
-        done
-    fi
     $A shell getprop > "$OUT/getprop.txt" 2>&1
     $A logcat -d > "$OUT/logcat.txt" 2>&1
     log "Android reports: serial=$serial wifi_mac=$mac imei=$imei (modem: $at_imei) imsi=$imsi sim: $sim"
