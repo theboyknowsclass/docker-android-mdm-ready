@@ -68,10 +68,10 @@ jobs:
           docker push "$IMG:latest"
           docker push "$IMG:${GITHUB_SHA::7}"
 
-      - name: Push to Docker Hub (only when DOCKERHUB_USERNAME and DOCKERHUB_TOKEN secrets are set)
+      - name: Push to Docker Hub (only when DOCKER_HUB_USERNAME and DOCKER_HUB_TOKEN secrets are set)
         env:
-          DH_USER: ${{ secrets.DOCKERHUB_USERNAME }}
-          DH_TOKEN: ${{ secrets.DOCKERHUB_TOKEN }}
+          DH_USER: ${{ secrets.DOCKER_HUB_USERNAME }}
+          DH_TOKEN: ${{ secrets.DOCKER_HUB_TOKEN }}
         run: |
           if [ -z "$DH_USER" ] || [ -z "$DH_TOKEN" ]; then echo "no Docker Hub secrets, skipped"; exit 0; fi
           echo "$DH_TOKEN" | docker login -u "$DH_USER" --password-stdin
