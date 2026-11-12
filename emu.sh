@@ -236,6 +236,13 @@ start_emu() {
         cam=imagefile:/tmp/qrpad.png
     fi
     [ -n "${DEVICE_SERIAL:-}" ] || pick_ids
+    # The emulator's modem (SIM, IMEI, phone number) connects over [::1]. Docker turns IPv6 off by
+    # default, and then the device has no SIM at all.
+    if ! grep -q '^0\{31\}1 .* lo$' /proc/net/if_inet6 2>/dev/null; then
+        echo 0 > /proc/sys/net/ipv6/conf/lo/disable_ipv6 2>/dev/null
+        grep -q '^0\{31\}1 .* lo$' /proc/net/if_inet6 2>/dev/null \
+            || log "WARNING: no IPv6 on lo, so no SIM/IMEI/phone number: add --sysctl net.ipv6.conf.all.disable_ipv6=0 to docker run"
+    fi
     patch_imei
     patch_sim
     adb start-server >/dev/null 2>&1
