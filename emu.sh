@@ -48,6 +48,7 @@ A="adb -s emulator-5554"
 DPC=""
 VIEW=${VIEW:-0}
 EMU_DIR=${ANDROID_HOME:-/opt/android}/emulator
+MODEM_PORT=${MODEM_PORT:-39555}
 # IMEIs built into the emulator's modem simulator; patch_imei swaps whichever is found
 IMEI_DEFAULTS="867400022047199 358240051111110"
 # SIM profile the modem simulator loads (IMSI, ICCID)
@@ -260,7 +261,7 @@ start_emu() {
     # the kernel command line, which init reads before the emulator's bootconfig.
     setsid nohup emulator -avd "$AVD" -writable-system $window -no-audio -no-boot-anim \
         -no-snapshot-load -no-snapshot-save -gpu swiftshader_indirect -accel on \
-        -camera-back "$cam" -phone-number "$DEVICE_PHONE" \
+        -camera-back "$cam" -phone-number "$DEVICE_PHONE" -modem-simulator-port "$MODEM_PORT" \
         -qemu -append "androidboot.serialno=$DEVICE_SERIAL" \
         > /tmp/emulator.log 2>&1 < /dev/null &
     if ! wait_boot; then
@@ -507,7 +508,32 @@ cmd_ids() {
     check wifi_mac "$([ "$mac" = "$DEVICE_WIFI_MAC" ] && echo 1)"
     check iccid "$(grep -q "icc_id=$DEVICE_ICCID" <<<"$sim" && echo 1)"
     check phone "$(grep -q "number=+\?${DEVICE_PHONE#+}" <<<"$sim" && echo 1)"
-    check imei "$(grep -q "$DEVICE_IMEI" <<<"$radio" && echo 1)"
+    local at_imei
+    at_imei=$(python3 - "$MODEM_PORT" <<'PY2' 2>&1
+import socket, sys, time
+s = socket.create_connection(("::1", int(sys.argv[1])), timeout=5)
+s.sendall(b"AT+CGSN\r")
+time.sleep(2)
+s.settimeout(2)
+buf = b""
+try:
+    while True:
+        d = s.recv(4096)
+        if not d:
+            break
+        buf += d
+except Exception:
+    pass
+print(buf.decode(errors="replace").replace("\r", " ").replace("\n", " "))
+PY2
+)
+    log "modem AT+CGSN: $at_imei"
+    for t in 1 2 3 4 5 6 7 8 9 10 11 12; do
+        local r
+        r=$($A shell service call iphonesubinfo $t s16 root 2>/dev/null | grep -oE "'[^']*'" | tr -d "'.[:space:]")
+        [ -n "$r" ] && log "iphonesubinfo $t (root): $r"
+    done
+    check imei "$(grep -q "$DEVICE_IMEI" <<<"$radio $at_imei" && echo 1)"
     check imsi "$(grep -q "$DEVICE_IMSI" <<<"$radio$($A shell service call iphonesubinfo 7 s16 com.android.shell 2>/dev/null | grep -oE "'[^']*'" | tr -d "'.[:space:]")" && echo 1)"
     check ssaid_key "$($A shell grep -c "$DEVICE_SSAID_KEY" /data/system/users/0/settings_ssaid.xml 2>/dev/null | tr -d '\r' | grep -q '^[1-9]' && echo 1)"
     stop_emu
