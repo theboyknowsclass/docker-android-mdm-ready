@@ -18,7 +18,7 @@
 #   DEVICE_IMEI        15 digits; random ones get a valid Luhn check digit
 #   DEVICE_SSAID_KEY   64 hex chars: the seed Android derives every app's ANDROID_ID from
 #                      (same key + same app = same ANDROID_ID)
-#   DEVICE_PHONE       SIM phone number (MSISDN), digits with optional leading +
+#   DEVICE_PHONE       SIM phone number (MSISDN), up to 11 digits, optional leading +
 #   DEVICE_IMSI        15 digits; random ones keep the emulator's 310260 (MCC 310, MNC 260)
 #   DEVICE_ICCID       SIM serial, 19-20 digits; random ones are 89 + digits + Luhn check digit
 #   DEVICE_WIFI_MAC    wlan0 MAC, aa:bb:cc:dd:ee:ff; random ones are locally administered unicast
@@ -89,7 +89,7 @@ pick_ids() {
     [[ $DEVICE_SERIAL =~ ^[A-Za-z0-9]{1,20}$ ]] || { log "DEVICE_SERIAL must be 1-20 letters/digits"; exit 2; }
     [[ $DEVICE_IMEI =~ ^[0-9]{15}$ ]] || { log "DEVICE_IMEI must be 15 digits"; exit 2; }
     [[ $DEVICE_SSAID_KEY =~ ^[0-9A-Fa-f]{64}$ ]] || { log "DEVICE_SSAID_KEY must be 64 hex chars"; exit 2; }
-    [[ $DEVICE_PHONE =~ ^\+?[0-9]{3,15}$ ]] || { log "DEVICE_PHONE must be 3-15 digits, optional +"; exit 2; }
+    [[ $DEVICE_PHONE =~ ^\+?[0-9]{3,11}$ ]] || { log "DEVICE_PHONE must be 3-11 digits, optional + (the emulator ignores longer numbers)"; exit 2; }
     [[ $DEVICE_IMSI =~ ^[0-9]{15}$ ]] || { log "DEVICE_IMSI must be 15 digits"; exit 2; }
     [[ $DEVICE_ICCID =~ ^[0-9]{19,20}$ ]] || { log "DEVICE_ICCID must be 19-20 digits"; exit 2; }
     [[ $DEVICE_WIFI_MAC =~ ^[0-9A-Fa-f]{2}(:[0-9A-Fa-f]{2}){5}$ ]] || { log "DEVICE_WIFI_MAC must be aa:bb:cc:dd:ee:ff"; exit 2; }
@@ -124,9 +124,9 @@ patch_imei() {
             case $f in *.mdmr-orig) continue ;; esac
             [ -f "$f.mdmr-orig" ] || cp -p "$f" "$f.mdmr-orig"
             found="$found $f"
-        done < <({ grep -rlaF "$def" "$EMU_DIR/qemu"; find "$ANDROID_AVD_HOME" -type f -size -2M -exec grep -laF "$def" {} +; } 2>/dev/null)
+        done < <(grep -rlaF "$def" "$EMU_DIR/qemu" 2>/dev/null)
     done
-    for f in $(find "$EMU_DIR/qemu" "$ANDROID_AVD_HOME" -name '*.mdmr-orig' 2>/dev/null); do
+    for f in $(find "$EMU_DIR/qemu" -name '*.mdmr-orig' 2>/dev/null); do
         cp -p "$f" "${f%.mdmr-orig}"
         for def in $IMEI_DEFAULTS; do
             DEF=$def NEW=$DEVICE_IMEI perl -pi -e 's/\Q$ENV{DEF}\E/$ENV{NEW}/g' "${f%.mdmr-orig}"
@@ -136,7 +136,7 @@ patch_imei() {
     if [ -z "$found" ]; then
         log "WARNING: no built-in IMEI found under $EMU_DIR; DEVICE_IMEI not applied"
     else
-        log "IMEI patched in:$(tr ' ' '\n' <<<"$found" | sort -u | grep -v qemu-system | tr '\n' ' ') + qemu binaries"
+        log "IMEI patched in the emulator binaries"
     fi
 }
 
@@ -144,14 +144,19 @@ patch_imei() {
 # and as the raw EF_ICCID read, which is BCD with the digits of each byte swapped.
 patch_sim() {
     local f
-    [ "${SKIP_SIM_PATCH:-0}" = 1 ] && { log "SIM profile left as is (SKIP_SIM_PATCH=1)"; return 0; }
     [ -f "$ICC_PROFILE" ] || { log "WARNING: no SIM profile at $ICC_PROFILE; IMSI/ICCID not applied"; return 0; }
     for f in "$ICC_PROFILE" $(find "$ANDROID_AVD_HOME" -name 'iccprofile_for_sim0.xml' 2>/dev/null); do
         [ -f "$f.mdmr-orig" ] || cp -p "$f" "$f.mdmr-orig"
-        python3 - "$f.mdmr-orig" "$f" "$DEVICE_IMSI" "$DEVICE_ICCID" <<'PY2' || { log "SIM profile patch failed"; exit 2; }
+        python3 - "$f.mdmr-orig" "$f" "$DEVICE_IMSI" "$DEVICE_ICCID" "$DEVICE_IMEI" "$IMEI_DEFAULTS" "${SKIP_SIM_PATCH:-0}" <<'PY2' || { log "SIM profile patch failed"; exit 2; }
 import re, sys
-src, dst, imsi, iccid = sys.argv[1:5]
+src, dst, imsi, iccid, imei, imei_defaults, skip = sys.argv[1:8]
 s = open(src).read()
+# the modem simulator answers AT+CGSN (IMEI) from this profile
+for d in imei_defaults.split():
+    s = s.replace(d, imei)
+if skip == "1":
+    open(dst, "w").write(s)
+    sys.exit(0)
 old = re.search(r"<CCID>(\d+)</CCID>", s).group(1)
 def swap(d):
     d = d + "F" * (len(d) % 2)
@@ -167,7 +172,7 @@ if k != 1:
 open(dst, "w").write(s)
 PY2
     done
-    log "SIM profile: imsi=$DEVICE_IMSI iccid=$DEVICE_ICCID"
+    if [ "${SKIP_SIM_PATCH:-0}" = 1 ]; then log "SIM profile: imei only (SKIP_SIM_PATCH=1)"; else log "SIM profile: imei=$DEVICE_IMEI imsi=$DEVICE_IMSI iccid=$DEVICE_ICCID"; fi
 }
 
 # wlan0 MAC, set from root after each boot
