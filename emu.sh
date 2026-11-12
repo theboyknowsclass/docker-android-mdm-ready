@@ -11,6 +11,13 @@
 #   e2e-sw    reset, 6 taps on the Setup Wizard welcome screen, its own QR reader scans /work/qr.png,
 #             assert Device Owner. Exit 0 = pass.
 #   start     boot the emulator with /work/qr.png on the camera and keep running (docker exec ... adb shell).
+#   ids       boot, apply the device identity below and print what Android reports. Exit 0 = all took.
+#
+# Device identity (any command that boots): random per container start unless set.
+#   DEVICE_SERIAL      serial number (Build.getSerial / ro.serialno), letters and digits
+#   DEVICE_IMEI        15 digits; random ones get a valid Luhn check digit
+#   DEVICE_SSAID_KEY   64 hex chars: the seed Android derives every app's ANDROID_ID from
+#                      (same key + same app = same ANDROID_ID)
 #
 # VIEW=1 (any command): show the emulator window live in a browser through noVNC on port 6080
 #   docker run ... -e VIEW=1 -p 6080:6080 ... then open http://localhost:6080/vnc.html?autoconnect=1
@@ -36,6 +43,74 @@ SETUPWIZARD=com.google.android.setupwizard
 A="adb -s emulator-5554"
 DPC=""
 VIEW=${VIEW:-0}
+EMU_DIR=${ANDROID_HOME:-/opt/android}/emulator
+# IMEIs the emulator's modem simulator is known to report; ids patches whichever is found
+IMEI_DEFAULTS="867400022047199 358240051111110"
+
+rand_hex() { head -c "$1" /dev/urandom | od -An -tx1 | tr -d ' \n'; }
+
+luhn() {
+    local n=$1 sum=0 i d
+    for ((i = 0; i < ${#n}; i++)); do
+        d=${n:${#n}-1-i:1}
+        if (( i % 2 == 0 )); then d=$((d * 2)); (( d > 9 )) && d=$((d - 9)); fi
+        sum=$((sum + d))
+    done
+    echo $(( (10 - sum % 10) % 10 ))
+}
+
+pick_ids() {
+    if [ -z "${DEVICE_SERIAL:-}" ]; then DEVICE_SERIAL=MDMR$(rand_hex 6 | tr a-f A-F); fi
+    if [ -z "${DEVICE_IMEI:-}" ]; then
+        local body
+        body=35$(od -An -tu1 -N12 /dev/urandom | tr -s ' ' '\n' | grep . | awk '{printf "%d", $1 % 10}')
+        DEVICE_IMEI=$body$(luhn "$body")
+    fi
+    if [ -z "${DEVICE_SSAID_KEY:-}" ]; then DEVICE_SSAID_KEY=$(rand_hex 32); fi
+    [[ $DEVICE_SERIAL =~ ^[A-Za-z0-9]{1,20}$ ]] || { log "DEVICE_SERIAL must be 1-20 letters/digits"; exit 2; }
+    [[ $DEVICE_IMEI =~ ^[0-9]{15}$ ]] || { log "DEVICE_IMEI must be 15 digits"; exit 2; }
+    [[ $DEVICE_SSAID_KEY =~ ^[0-9A-Fa-f]{64}$ ]] || { log "DEVICE_SSAID_KEY must be 64 hex chars"; exit 2; }
+    DEVICE_SSAID_KEY=$(tr a-f A-F <<<"$DEVICE_SSAID_KEY")
+    log "identity: serial=$DEVICE_SERIAL imei=$DEVICE_IMEI ssaid_key=${DEVICE_SSAID_KEY:0:8}..."
+}
+
+# The modem simulator has the IMEI built in, so swap it (same length) in the emulator files.
+# Originals are kept as *.mdmr-orig, so every start patches from the original.
+patch_imei() {
+    local f def found=""
+    for def in $IMEI_DEFAULTS; do
+        while IFS= read -r f; do
+            [ -n "$f" ] || continue
+            case $f in *.mdmr-orig) continue ;; esac
+            [ -f "$f.mdmr-orig" ] || cp -p "$f" "$f.mdmr-orig"
+            found="$found $f"
+        done < <({ grep -rlaF "$def" "$EMU_DIR"; find "$ANDROID_AVD_HOME" -type f -size -10M -exec grep -laF "$def" {} +; } 2>/dev/null)
+    done
+    for f in $(find "$EMU_DIR" "$ANDROID_AVD_HOME" -name '*.mdmr-orig' 2>/dev/null); do
+        cp -p "$f" "${f%.mdmr-orig}"
+        for def in $IMEI_DEFAULTS; do
+            DEF=$def NEW=$DEVICE_IMEI perl -pi -e 's/\Q$ENV{DEF}\E/$ENV{NEW}/g' "${f%.mdmr-orig}"
+        done
+        found="$found ${f%.mdmr-orig}"
+    done
+    if [ -z "$found" ]; then
+        log "WARNING: no built-in IMEI found under $EMU_DIR; DEVICE_IMEI not applied"
+    else
+        log "IMEI patched in:$(tr ' ' '\n' <<<"$found" | sort -u | tr '\n' ' ')"
+    fi
+}
+
+# Android derives each app's ANDROID_ID from a per-user key in settings_ssaid.xml. Writing a new key
+# (text XML; Android reads text and binary XML) and dropping the per-app entries gives new IDs.
+write_ssaid() {
+    $A shell "cat > /data/system/users/0/settings_ssaid.xml" <<EOF
+<?xml version='1.0' encoding='utf-8' standalone='yes' ?>
+<settings version="-1">
+<setting id="0" name="userkey" value="$DEVICE_SSAID_KEY" package="android" defaultValue="$DEVICE_SSAID_KEY" defaultSysSet="false" />
+</settings>
+EOF
+    $A shell 'chown system:system /data/system/users/0/settings_ssaid.xml; chmod 600 /data/system/users/0/settings_ssaid.xml; restorecon /data/system/users/0/settings_ssaid.xml'
+}
 
 log() { echo "[$(date +%H:%M:%S)] $*"; }
 
@@ -100,11 +175,15 @@ start_emu() {
         java -Djava.awt.headless=true -cp "$MT" Pad "$WORK/qr.png" /tmp/qrpad.png "$CAM_SIZE" "$CAM_CANVAS" "$CAM_CANVAS" "$CAM_XOFF" || exit 2
         cam=imagefile:/tmp/qrpad.png
     fi
+    [ -n "${DEVICE_SERIAL:-}" ] || pick_ids
+    patch_imei
     adb start-server >/dev/null 2>&1
     log "booting $AVD, back camera $cam"
+    # androidboot.* on the kernel command line are read before the emulator's bootconfig, so this wins
     setsid nohup emulator -avd "$AVD" -writable-system $window -no-audio -no-boot-anim \
         -no-snapshot-load -no-snapshot-save -gpu swiftshader_indirect -accel on \
-        -camera-back "$cam" > /tmp/emulator.log 2>&1 < /dev/null &
+        -camera-back "$cam" -qemu -append "androidboot.serialno=$DEVICE_SERIAL" \
+        > /tmp/emulator.log 2>&1 < /dev/null &
     if ! wait_boot; then
         tail -20 /tmp/emulator.log
         log "emulator did not boot"
@@ -114,7 +193,14 @@ start_emu() {
     log "booted"
 }
 
+# A full emulator restart. adb reboot after disable-verity can crash the emulator (seen on CI runners).
+restart_emu() {
+    stop_emu
+    start_emu
+}
+
 stop_emu() {
+    $A shell sync >/dev/null 2>&1
     $A emu kill >/dev/null 2>&1
     sleep 5
     pkill -f qemu-system >/dev/null 2>&1
@@ -133,11 +219,12 @@ serve_agent() {
 reset_device() {
     log "reset to un-set-up"
     $A shell pm clear "$SETUPWIZARD" >/dev/null 2>&1
-    $A shell 'rm -f /data/system/users/0/settings_global.xml /data/system/users/0/settings_secure.xml /data/system/users/0/settings_system.xml /data/system/device_policies.xml /data/system/device_policy_state.xml /data/system/device_owner_2.xml'
-    $A reboot
-    sleep 10
-    wait_boot || { log "no boot after reset"; exit 3; }
-    root_up
+    # stop the framework first, so system_server cannot write its settings back before the restart
+    $A shell stop
+    sleep 3
+    $A shell 'rm -f /data/system/users/0/settings_global.xml /data/system/users/0/settings_secure.xml /data/system/users/0/settings_system.xml /data/system/users/0/settings_ssaid.xml /data/system/device_policies.xml /data/system/device_policy_state.xml /data/system/device_owner_2.xml'
+    write_ssaid
+    restart_emu
     if [ -n "$DPC" ]; then
         $A shell pm uninstall "${DPC%%/*}" >/dev/null 2>&1
     fi
@@ -212,10 +299,7 @@ cmd_bake() {
     start_emu
     log "disable verity, remount system"
     $A disable-verity
-    $A reboot
-    sleep 10
-    wait_boot || { log "no boot after disable-verity"; exit 3; }
-    root_up
+    restart_emu
     $A remount || { log "remount failed"; exit 3; }
     # GoogleSdkSetup has to leave priv-app entirely (a renamed folder inside priv-app is still scanned),
     # and ro.setupwizard.mode=DISABLED makes Google's Setup Wizard skip itself.
@@ -282,9 +366,8 @@ PY
     $A push /tmp/privapp-permissions-mdmtest-setupwizard.xml /system_ext/etc/permissions/
     $A shell 'chmod 755 /system_ext/priv-app/MdmTestSetupWizard; chmod 644 /system_ext/priv-app/MdmTestSetupWizard/* /system_ext/etc/permissions/privapp-permissions-mdmtest-setupwizard.xml; restorecon -R /system_ext/priv-app/MdmTestSetupWizard /system_ext/etc/permissions'
     log "rebooting with the Setup Wizard"
-    $A reboot
-    sleep 10
-    if ! wait_boot; then
+    stop_emu
+    if ! start_emu; then
         $A logcat -d | grep -iE 'privapp-permissions|FATAL EXCEPTION|setupwizard' | tail -20
         log "no boot with the Setup Wizard installed"
         exit 3
@@ -295,6 +378,33 @@ PY
     $A shell dumpsys activity activities | grep -m1 topResumedActivity
     stop_emu
     log "bake-sw done: docker commit this container"
+}
+
+# Boot, reset with the chosen identity and print what Android reports.
+cmd_ids() {
+    mkdir -p "$OUT"
+    start_emu
+    reset_device
+    local serial imei ssaid ok=0
+    serial=$($A shell getprop ro.serialno | tr -d '\r')
+    # IMEI: ask telephony a few ways (transaction numbers differ between Android versions)
+    local t out
+    imei=""
+    for t in 1 2 3 4 5; do
+        out=$($A shell service call iphonesubinfo $t s16 com.android.shell 2>/dev/null | grep -oE "'[^']*'" | tr -d "'.[:space:]")
+        if [[ $out =~ ^[0-9]{15}$ ]]; then imei=$out; break; fi
+    done
+    [ -n "$imei" ] || imei=$($A shell dumpsys phone 2>/dev/null | grep -oE '\b[0-9]{15}\b' | head -1)
+    log "IMEI candidates seen by the modem: $($A shell dumpsys phone 2>/dev/null | grep -oiE 'imei[^,]{0,40}' | sort -u | head -3 | tr '\n' ' ')"
+    ssaid=$($A shell settings get secure android_id | tr -d '\r')
+    log "reported: serial=$serial imei=$imei shell_android_id=$ssaid"
+    log "ssaid file: $($A shell head -c 300 /data/system/users/0/settings_ssaid.xml | tr -d '\n' | cut -c1-200)"
+    [ "$serial" = "$DEVICE_SERIAL" ] && log "serial OK" || { log "serial NOT applied"; ok=1; }
+    [ "$imei" = "$DEVICE_IMEI" ] && log "IMEI OK" || { log "IMEI NOT applied"; ok=1; }
+    $A shell grep -q "$DEVICE_SSAID_KEY" /data/system/users/0/settings_ssaid.xml 2>/dev/null \
+        && log "SSAID key OK" || { log "SSAID key NOT kept"; ok=1; }
+    stop_emu
+    return $ok
 }
 
 cmd_e2e() {
@@ -367,11 +477,12 @@ case "${1:-e2e}" in
     bake-builtin) cmd_bake && cmd_bake_sw ;;
     e2e) cmd_e2e ;;
     e2e-sw) cmd_e2e_sw ;;
+    ids) cmd_ids ;;
     start)
         start_emu
         serve_agent
         log "running; docker exec -it <container> adb shell"
         tail -f /tmp/emulator.log
         ;;
-    *) echo "usage: emu.sh bake|bake-sw|bake-builtin|e2e|e2e-sw|start"; exit 2 ;;
+    *) echo "usage: emu.sh bake|bake-sw|bake-builtin|e2e|e2e-sw|start|ids"; exit 2 ;;
 esac

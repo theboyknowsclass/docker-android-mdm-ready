@@ -42,6 +42,7 @@ docker run --rm --device /dev/kvm -v "$PWD/work:/work" ghcr.io/theboyknowsclass/
 |---|---|
 | `e2e` (default) | scan, provision, assert Device Owner |
 | `start` | boot with the QR on the camera and keep running; use `docker exec -it <c> adb shell` |
+| `ids` | boot, apply the device identity and print what Android reports |
 | `bake` | one-off image preparation, used by the build |
 
 ### Options (`-e NAME=value`)
@@ -52,6 +53,18 @@ docker run --rm --device /dev/kvm -v "$PWD/work:/work" ghcr.io/theboyknowsclass/
 | `CAM_SIZE` | `800` | QR size on the camera canvas |
 | `CAM_CANVAS` | `2000` | camera canvas size |
 | `CAM_XOFF` | `-447` | x offset (the emulator's image camera is rotated and off centre) |
+
+### Device identity
+
+Each container start gets a new random identity, so every run enrols as a new device. Set any of these to fix a value:
+
+| Name | Format | Random default |
+|---|---|---|
+| `DEVICE_SERIAL` | 1-20 letters/digits (`Build.getSerial()`, `ro.serialno`) | `MDMR` + 12 hex |
+| `DEVICE_IMEI` | 15 digits | `35` + 12 random + Luhn check digit |
+| `DEVICE_SSAID_KEY` | 64 hex | random |
+
+On Android 8+ `ANDROID_ID` differs per app; Android derives it from `DEVICE_SSAID_KEY`, so the same key and the same app give the same `ANDROID_ID`.
 
 ### Several devices
 

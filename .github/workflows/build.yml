@@ -14,7 +14,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 90
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
       - name: Free disk space (the image is several GB)
         run: |
@@ -38,6 +38,14 @@ jobs:
         run: |
           docker commit --change 'CMD ["e2e"]' bake mdm-emu:ready
           docker rm bake
+
+      - name: Check device identity (serial, IMEI, SSAID key)
+        continue-on-error: true
+        run: |
+          docker run --rm --device /dev/kvm \
+            -e DEVICE_SERIAL=CITEST123 -e DEVICE_IMEI=356938035643809 \
+            -e DEVICE_SSAID_KEY=0123456789ABCDEF0123456789ABCDEF0123456789ABCDEF0123456789ABCDEF \
+            mdm-emu:ready ids
 
       - name: Push to GHCR
         run: |
