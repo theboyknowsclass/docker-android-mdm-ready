@@ -513,6 +513,23 @@ except Exception:
 print(buf.decode(errors="replace").split()[0] if buf.split() else "")
 PY2
 )
+    if [ "$imei" != "$DEVICE_IMEI" ]; then
+        log "IMEI diag: guest files with a default IMEI: $($A shell "grep -rlaE '867400022047199|358240051111110' /vendor/lib64 /vendor/bin /vendor/etc /system/lib64/libril* 2>/dev/null" | tr -d '\r' | tr '\n' ' ')"
+        $A logcat -d -b radio 2>/dev/null | grep -iE "imei|CGSN|DEVICE_IDENTITY|GET_IMEI|baseband" | head -15 | cut -c1-200
+        for c in "AT+CGSN=1" "AT+CGSN=2" "AT+CIMI" "AT+WRMP?"; do
+            log "modem $c: $(python3 -c "
+import socket,sys,time
+s=socket.create_connection(('::1',$MODEM_PORT),timeout=5);s.sendall(b'$c\\r');time.sleep(2);s.settimeout(2)
+b=b''
+try:
+  while True:
+    d=s.recv(4096)
+    if not d: break
+    b+=d
+except Exception: pass
+print(b.decode(errors='replace').replace('\\r',' ').replace('\\n',' '))" 2>&1)"
+        done
+    fi
     $A shell getprop > "$OUT/getprop.txt" 2>&1
     $A logcat -d > "$OUT/logcat.txt" 2>&1
     log "Android reports: serial=$serial wifi_mac=$mac imei=$imei (modem: $at_imei) imsi=$imsi sim: $sim"
