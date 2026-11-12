@@ -478,9 +478,13 @@ cmd_ids() {
     log "props: $($A shell getprop | grep -E 'gsm\.(sim|operator|version\.ril)|ril\.|modem' | tr -d '\r' | tr '\n' ' ' | cut -c1-600)"
     $A shell getprop > "$OUT/getprop.txt" 2>&1
     $A logcat -d > "$OUT/logcat.txt" 2>&1
-    for t in 1 2 3 4 5 6 7 8 9 10; do
-        log "iphonesubinfo $t: $($A shell service call iphonesubinfo $t s16 com.android.shell 2>/dev/null | tr -d '\r\n' | cut -c1-160)"
-    done
+    log "airplane=$($A shell settings get global airplane_mode_on | tr -d '\r') rild=$($A shell 'ps -A | grep -c rild' | tr -d '\r') sim_state=$($A shell getprop gsm.sim.state | tr -d '\r')"
+    log "--- radio log (RIL / SIM lines)"
+    grep -iE "RILJ|rild|reference-ril|SIM_STATE|IccCard|UiccController|at_send|AT[<>]|modem" "$OUT/radio.txt" "$OUT/logcat.txt" 2>/dev/null | grep -v "^--" | head -60 | cut -c1-220
+    log "--- telephony.registry"
+    $A shell dumpsys telephony.registry 2>/dev/null | head -25 | cut -c1-200
+    log "--- emulator log (modem)"
+    grep -iE "modem|sim|telephony|gsm" /tmp/emulator.log | head -20 | cut -c1-200
     log "siminfo: $sim"
     check() { if [ "$2" = 1 ]; then log "$1 OK"; else log "$1 NOT applied"; ok=1; fi; }
     check serial "$([ "$serial" = "$DEVICE_SERIAL" ] && echo 1)"
