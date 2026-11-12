@@ -117,27 +117,27 @@ ipv6_for_modem() {
 # The modem simulator has the IMEI built in, so swap it (same length) in the emulator files.
 # Originals are kept as *.mdmr-orig, so every start patches from the original.
 patch_imei() {
-    local f def found=""
-    for def in $IMEI_DEFAULTS; do
-        while IFS= read -r f; do
-            [ -n "$f" ] || continue
-            case $f in *.mdmr-orig) continue ;; esac
-            [ -f "$f.mdmr-orig" ] || cp -p "$f" "$f.mdmr-orig"
-            found="$found $f"
-        done < <(grep -rlaF "$def" "$EMU_DIR/qemu" 2>/dev/null)
+    # The modem simulator inside qemu builds its IMEI answer from two 8-byte immediates in the code
+    # ("86740002" and "22047199", overlapping on the 8th digit), so those are swapped too.
+    local f out
+    for f in "$EMU_DIR"/qemu/linux-x86_64/qemu-system-x86_64*; do
+        case $f in *.mdmr-orig) continue ;; esac
+        [ -f "$f.mdmr-orig" ] || cp -p "$f" "$f.mdmr-orig"
+        out=$(python3 - "$f.mdmr-orig" "$f" "$DEVICE_IMEI" <<'PY2'
+import sys
+src, dst, imei = sys.argv[1:4]
+b = open(src, "rb").read()
+counts = []
+for old, new in ((b"867400022047199", imei), (b"358240051111110", imei),
+                 (b"86740002", imei[:8]), (b"22047199", imei[7:])):
+    counts.append("%s=%d" % (old.decode(), b.count(old)))
+    b = b.replace(old, new.encode())
+open(dst, "wb").write(b)
+print(" ".join(counts))
+PY2
+) || { log "IMEI patch failed for $f"; exit 2; }
+        log "IMEI patched in $(basename "$f"): $out"
     done
-    for f in $(find "$EMU_DIR/qemu" -name '*.mdmr-orig' 2>/dev/null); do
-        cp -p "$f" "${f%.mdmr-orig}"
-        for def in $IMEI_DEFAULTS; do
-            DEF=$def NEW=$DEVICE_IMEI perl -pi -e 's/\Q$ENV{DEF}\E/$ENV{NEW}/g' "${f%.mdmr-orig}"
-        done
-        found="$found ${f%.mdmr-orig}"
-    done
-    if [ -z "$found" ]; then
-        log "WARNING: no built-in IMEI found under $EMU_DIR; DEVICE_IMEI not applied"
-    else
-        log "IMEI patched in the emulator binaries"
-    fi
 }
 
 # IMSI and ICCID live in the modem simulator's SIM profile. The ICCID is there twice: plain (<CCID>)
