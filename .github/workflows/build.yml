@@ -39,23 +39,24 @@ jobs:
           docker commit --change 'CMD ["e2e"]' bake mdm-emu:ready
           docker rm bake
 
-      - name: Check device identity
-        continue-on-error: true
+      - name: Check device identity (blocks the push if any value does not take)
         run: |
-          mkdir -p ids-out ids-out-nosim
+          mkdir -p ids-out
           docker run --rm --device /dev/kvm --cap-add NET_ADMIN --sysctl net.ipv6.conf.all.disable_ipv6=0 -v "$PWD/ids-out:/work/out" \
             -e DEVICE_SERIAL=CITEST123 -e DEVICE_IMEI=356938035643809 \
             -e DEVICE_SSAID_KEY=0123456789ABCDEF0123456789ABCDEF0123456789ABCDEF0123456789ABCDEF \
             -e DEVICE_PHONE=+4477009001 -e DEVICE_IMSI=310260123456789 \
             -e DEVICE_ICCID=89441100000000000017 -e DEVICE_WIFI_MAC=02:11:22:33:44:55 \
             mdm-emu:ready ids
+          # and once with random values
+          docker run --rm --device /dev/kvm --cap-add NET_ADMIN --sysctl net.ipv6.conf.all.disable_ipv6=0 mdm-emu:ready ids
 
       - name: Keep identity check output
         if: always()
         uses: actions/upload-artifact@v4
         with:
           name: ids-out
-          path: ids-out*
+          path: ids-out
           if-no-files-found: ignore
 
       - name: Push to GHCR

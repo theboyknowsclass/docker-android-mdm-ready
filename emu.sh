@@ -481,39 +481,20 @@ PY
     log "bake-sw done: docker commit this container"
 }
 
-# Boot, reset with the chosen identity and print what Android reports.
-# Telephony values are read straight from the modem simulator's answers (logcat RILJ) and the SIM table.
+# Boot, reset with the chosen identity and check what Android and the modem report.
+# Telephony is asked as root: "service call iphonesubinfo" 1 = IMEI, 8 = IMSI (Android 14).
 cmd_ids() {
     mkdir -p "$OUT"
     start_emu
     reset_device
     sleep 15
-    local ok=0 serial mac sim radio
+    local ok=0 serial mac sim imei imsi at_imei
+    sub() { $A shell service call iphonesubinfo "$1" s16 root 2>/dev/null | grep -oE "'[^']*'" | tr -d "'.[:space:]"; }
     serial=$($A shell getprop ro.serialno | tr -d '\r')
     mac=$($A shell cat /sys/class/net/wlan0/address | tr -d '\r')
-    sim=$($A shell content query --uri content://telephony/siminfo --projection icc_id:number:mcc_string:mnc_string 2>/dev/null | tr -d '\r')
-    $A shell dumpsys iphonesubinfo > "$OUT/iphonesubinfo.txt" 2>&1
-    $A shell dumpsys phone > "$OUT/phone.txt" 2>&1
-    $A logcat -d -b radio > "$OUT/radio.txt" 2>&1
-    radio=$(cat "$OUT/radio.txt" "$OUT/phone.txt" "$OUT/iphonesubinfo.txt")
-    log "reported: serial=$serial mac=$mac"
-    log "props: $($A shell getprop | grep -E 'gsm\.(sim|operator|version\.ril)|ril\.|modem' | tr -d '\r' | tr '\n' ' ' | cut -c1-600)"
-    $A shell getprop > "$OUT/getprop.txt" 2>&1
-    $A logcat -d > "$OUT/logcat.txt" 2>&1
-    log "airplane=$($A shell settings get global airplane_mode_on | tr -d '\r') rild=$($A shell 'ps -A | grep -c rild' | tr -d '\r') sim_state=$($A shell getprop gsm.sim.state | tr -d '\r')"
-    log "--- radio log (RIL / SIM lines)"
-    grep -iE "RILJ|rild|reference-ril|SIM_STATE|IccCard|UiccController|at_send|AT[<>]|modem" "$OUT/radio.txt" "$OUT/logcat.txt" 2>/dev/null | grep -v "^--" | head -60 | cut -c1-220
-    log "--- telephony.registry"
-    $A shell dumpsys telephony.registry 2>/dev/null | head -25 | cut -c1-200
-    log "--- emulator log (modem)"
-    grep -iE "modem|sim|telephony|gsm" /tmp/emulator.log | head -20 | cut -c1-200
-    log "siminfo: $sim"
-    check() { if [ "$2" = 1 ]; then log "$1 OK"; else log "$1 NOT applied"; ok=1; fi; }
-    check serial "$([ "$serial" = "$DEVICE_SERIAL" ] && echo 1)"
-    check wifi_mac "$([ "$mac" = "$DEVICE_WIFI_MAC" ] && echo 1)"
-    check iccid "$(grep -q "icc_id=$DEVICE_ICCID" <<<"$sim" && echo 1)"
-    check phone "$(grep -q "number=+\?${DEVICE_PHONE#+}" <<<"$sim" && echo 1)"
-    local at_imei
+    sim=$($A shell content query --uri content://telephony/siminfo --projection icc_id:number 2>/dev/null | tr -d '\r')
+    imei=$(sub 1)
+    imsi=$(sub 8)
     at_imei=$(python3 - "$MODEM_PORT" <<'PY2' 2>&1
 import socket, sys, time
 s = socket.create_connection(("::1", int(sys.argv[1])), timeout=5)
@@ -529,25 +510,19 @@ try:
         buf += d
 except Exception:
     pass
-print(buf.decode(errors="replace").replace("\r", " ").replace("\n", " "))
+print(buf.decode(errors="replace").split()[0] if buf.split() else "")
 PY2
 )
-    log "modem AT+CGSN: $at_imei"
-    local qexe
-    qexe=$(readlink -f /proc/$(pgrep -f qemu-system | head -1)/exe 2>/dev/null)
-    log "qemu running: $qexe; defaults left in it: $(for d in $IMEI_DEFAULTS; do echo -n "$d=$(grep -caF "$d" "$qexe") "; done) new=$(grep -caF "$DEVICE_IMEI" "$qexe")"
-    log "AVD modem files: $(find "$ANDROID_AVD_HOME" -path '*modem*' -type f | tr '\n' ' ')"
-    log "IMEI defaults in AVD modem files: $(grep -rlaE "$(tr ' ' '|' <<<"$IMEI_DEFAULTS")" "$ANDROID_AVD_HOME"/*/modem_simulator 2>/dev/null | tr '\n' ' ')"
-    log "IMEI defaults in system image: $(grep -rlaE "$(tr ' ' '|' <<<"$IMEI_DEFAULTS")" "$SYSIMG_DIR/data" 2>/dev/null | tr '\n' ' ')"
-    grep -raoE ".{0,80}($(tr ' ' '|' <<<"$IMEI_DEFAULTS")).{0,40}" "$ANDROID_AVD_HOME"/*/modem_simulator 2>/dev/null | head -5
-    for t in 1 2 3 4 5 6 7 8 9 10 11 12; do
-        local r
-        r=$($A shell service call iphonesubinfo $t s16 root 2>/dev/null | grep -oE "'[^']*'" | tr -d "'.[:space:]")
-        [ -n "$r" ] && log "iphonesubinfo $t (root): $r"
-    done
-    check imei "$(grep -q "$DEVICE_IMEI" <<<"$at_imei $($A shell service call iphonesubinfo 1 s16 root 2>/dev/null | grep -oE "'[^']*'" | tr -d "'.[:space:]")" && echo 1)"
-    log "AVD files: $(find "$ANDROID_AVD_HOME" -type f -size -2M | sed "s#$ANDROID_AVD_HOME/##" | tr '\n' ' ' | cut -c1-600)"
-    check imsi "$(grep -q "$DEVICE_IMSI" <<<"$radio$($A shell service call iphonesubinfo 8 s16 root 2>/dev/null | grep -oE "'[^']*'" | tr -d "'.[:space:]")" && echo 1)"
+    $A shell getprop > "$OUT/getprop.txt" 2>&1
+    $A logcat -d > "$OUT/logcat.txt" 2>&1
+    log "Android reports: serial=$serial wifi_mac=$mac imei=$imei (modem: $at_imei) imsi=$imsi sim: $sim"
+    check() { if [ "$2" = 1 ]; then log "$1 OK"; else log "$1 NOT applied"; ok=1; fi; }
+    check serial "$([ "$serial" = "$DEVICE_SERIAL" ] && echo 1)"
+    check wifi_mac "$([ "$mac" = "$DEVICE_WIFI_MAC" ] && echo 1)"
+    check imei "$([ "$imei" = "$DEVICE_IMEI" ] && echo 1)"
+    check imsi "$([ "$imsi" = "$DEVICE_IMSI" ] && echo 1)"
+    check iccid "$(grep -q "icc_id=$DEVICE_ICCID" <<<"$sim" && echo 1)"
+    check phone "$(grep -q "number=+\?${DEVICE_PHONE#+}" <<<"$sim" && echo 1)"
     check ssaid_key "$($A shell grep -c "$DEVICE_SSAID_KEY" /data/system/users/0/settings_ssaid.xml 2>/dev/null | tr -d '\r' | grep -q '^[1-9]' && echo 1)"
     stop_emu
     return $ok
