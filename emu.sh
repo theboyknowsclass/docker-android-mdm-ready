@@ -98,6 +98,21 @@ pick_ids() {
     log "identity: serial=$DEVICE_SERIAL imei=$DEVICE_IMEI phone=$DEVICE_PHONE imsi=$DEVICE_IMSI iccid=$DEVICE_ICCID mac=$DEVICE_WIFI_MAC ssaid_key=${DEVICE_SSAID_KEY:0:8}..."
 }
 
+# The emulator's modem (SIM, IMEI, phone number) connects over [::1], looked up with AI_ADDRCONFIG,
+# which only resolves IPv6 when the container has a non-loopback, non-link-local IPv6 address.
+# Docker gives containers none by default, and then Android sees no SIM at all. Fix: IPv6 switched
+# on (--sysctl net.ipv6.conf.all.disable_ipv6=0) plus a private address on lo (needs --cap-add NET_ADMIN),
+# or a Docker network created with --ipv6.
+ipv6_for_modem() {
+    has_v6() { grep -vqE '^(0{31}1|fe80) ' /proc/net/if_inet6 2>/dev/null && grep -vE '^(0{31}1|fe80)' /proc/net/if_inet6 | grep -q .; }
+    has_v6 && return 0
+    echo 0 > /proc/sys/net/ipv6/conf/all/disable_ipv6 2>/dev/null
+    echo 0 > /proc/sys/net/ipv6/conf/lo/disable_ipv6 2>/dev/null
+    ip -6 addr add fd6d:646d:7264::1/128 dev lo 2>/dev/null
+    has_v6 && { log "IPv6 address added for the emulator modem"; return 0; }
+    log "WARNING: no usable IPv6, so no SIM, IMEI or phone number. Run with --cap-add NET_ADMIN --sysctl net.ipv6.conf.all.disable_ipv6=0"
+}
+
 # The modem simulator has the IMEI built in, so swap it (same length) in the emulator files.
 # Originals are kept as *.mdmr-orig, so every start patches from the original.
 patch_imei() {
@@ -236,13 +251,7 @@ start_emu() {
         cam=imagefile:/tmp/qrpad.png
     fi
     [ -n "${DEVICE_SERIAL:-}" ] || pick_ids
-    # The emulator's modem (SIM, IMEI, phone number) connects over [::1]. Docker turns IPv6 off by
-    # default, and then the device has no SIM at all.
-    if ! grep -q '^0\{31\}1 .* lo$' /proc/net/if_inet6 2>/dev/null; then
-        echo 0 > /proc/sys/net/ipv6/conf/lo/disable_ipv6 2>/dev/null
-        grep -q '^0\{31\}1 .* lo$' /proc/net/if_inet6 2>/dev/null \
-            || log "WARNING: no IPv6 on lo, so no SIM/IMEI/phone number: add --sysctl net.ipv6.conf.all.disable_ipv6=0 to docker run"
-    fi
+    ipv6_for_modem
     patch_imei
     patch_sim
     adb start-server >/dev/null 2>&1

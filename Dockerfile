@@ -55,9 +55,10 @@ RUN set -eux; \
     ls -la /opt/mdmtest
 
 # Live view (VIEW=1): Xvfb + x11vnc + noVNC. The base image normally has them; install if not.
-RUN if ! command -v Xvfb >/dev/null || ! command -v x11vnc >/dev/null \
+# iproute2: emu.sh adds an IPv6 address for the emulator's modem.
+RUN if ! command -v Xvfb >/dev/null || ! command -v x11vnc >/dev/null || ! command -v ip >/dev/null \
         || [ -z "$(find /usr/share/novnc /opt/noVNC /opt /home -maxdepth 4 -name vnc.html 2>/dev/null | head -1)" ]; then \
-        apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends xvfb x11vnc novnc websockify \
+        apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends xvfb x11vnc novnc websockify iproute2 \
         && rm -rf /var/lib/apt/lists/*; \
     fi
 

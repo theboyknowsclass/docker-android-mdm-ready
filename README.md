@@ -30,7 +30,7 @@ cp my-qr.png work/qr.png            # required
 cp my-qr.json work/qr.json          # optional: expected decoded text, checked against the scan
 cp my-dpc.apk work/agent.apk        # optional: served at http://10.0.2.2:8099/agent.apk
 
-docker run --rm --device /dev/kvm --sysctl net.ipv6.conf.all.disable_ipv6=0 -v "$PWD/work:/work" ghcr.io/theboyknowsclass/docker-android-mdm-ready:latest e2e
+docker run --rm --device /dev/kvm --cap-add NET_ADMIN --sysctl net.ipv6.conf.all.disable_ipv6=0 -v "$PWD/work:/work" ghcr.io/theboyknowsclass/docker-android-mdm-ready:latest e2e
 ```
 
 - Evidence is written to `work/out/`: `decoded.json`, `logcat.txt`, `screen-N.png`, and `fail.png` on failure.
@@ -70,7 +70,7 @@ Each container start gets a new random identity, so every run enrols as a new de
 
 On Android 8+ `ANDROID_ID` differs per app; Android derives it from `DEVICE_SSAID_KEY`, so the same key and the same app give the same `ANDROID_ID`.
 
-`--sysctl net.ipv6.conf.all.disable_ipv6=0` is needed for the SIM values and the IMEI: the emulator's modem connects over IPv6 localhost, which Docker turns off by default. Without it the device has no SIM.
+`--cap-add NET_ADMIN --sysctl net.ipv6.conf.all.disable_ipv6=0` are needed for the SIM values and the IMEI: the emulator's modem connects over IPv6 localhost, which only works when the container has an IPv6 address, and Docker gives it none by default. Without them the device has no SIM.
 
 The container logs the identity it used at start (`identity: ...`). `docker run ... ids` boots, applies it and checks each value against what Android reports.
 

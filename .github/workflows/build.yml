@@ -43,8 +43,8 @@ jobs:
         continue-on-error: true
         run: |
           mkdir -p ids-out ids-out-nosim
-          docker run --rm --device /dev/kvm --sysctl net.ipv6.conf.all.disable_ipv6=0 -e SKIP_SIM_PATCH=1 -v "$PWD/ids-out-nosim:/work/out" mdm-emu:ready ids || true
-          docker run --rm --device /dev/kvm --sysctl net.ipv6.conf.all.disable_ipv6=0 -v "$PWD/ids-out:/work/out" \
+          docker run --rm --device /dev/kvm --cap-add NET_ADMIN --sysctl net.ipv6.conf.all.disable_ipv6=0 -e SKIP_SIM_PATCH=1 -v "$PWD/ids-out-nosim:/work/out" mdm-emu:ready ids || true
+          docker run --rm --device /dev/kvm --cap-add NET_ADMIN --sysctl net.ipv6.conf.all.disable_ipv6=0 -v "$PWD/ids-out:/work/out" \
             -e DEVICE_SERIAL=CITEST123 -e DEVICE_IMEI=356938035643809 \
             -e DEVICE_SSAID_KEY=0123456789ABCDEF0123456789ABCDEF0123456789ABCDEF0123456789ABCDEF \
             -e DEVICE_PHONE=447700900123 -e DEVICE_IMSI=310260123456789 \
