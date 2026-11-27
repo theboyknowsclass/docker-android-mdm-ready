@@ -241,7 +241,7 @@ set_wifi_mac() {
 
 # Android 14 asks the guest radio HAL for the IMEI (DEVICE_IMEI), and the emulator's RIL libraries
 # answer from a built-in value instead of asking the modem. Patch them on the (remounted) vendor
-# partition; originals are kept in the container under $MT/vendor-orig. Any failure is fatal: a
+# partition; originals are kept in the container under $MT/vendor-orig. Any patch failure is fatal: a
 # device that silently reports the default IMEI looks like every other device to the server.
 patch_guest_imei() {
     local lib libs name out hits=0
@@ -251,7 +251,9 @@ patch_guest_imei() {
     # any vendor library or HAL binary that holds one (only on the first run: the originals are kept).
     libs="/vendor/lib64/libcuttlefish-ril-2.so /vendor/lib64/libril-modem-lib.so"
     if [ ! -f "$MT/vendor-orig/.list" ]; then
-        libs="$libs $($A shell "grep -l -e 867400022047199 -e 358240051111110 /vendor/lib64/*.so /vendor/bin/hw/* 2>/dev/null" | tr -d '\r')"
+        libs="$libs $($A shell "grep -rl -e 867400022047199 -e 358240051111110 /vendor/lib64 /vendor/bin /odm/lib64 /odm/bin 2>/dev/null" | tr -d '\r')"
+        # files in an APEX are read-only images: log them, they cannot be patched in place
+        log "default IMEI in APEX files (not patched): $($A shell "grep -rl -e 867400022047199 -e 358240051111110 /apex/*/lib64 /apex/*/bin 2>/dev/null" | tr -d '\r' | tr '\n' ' ')"
         for lib in $libs; do
             $A shell "test -f $lib" >/dev/null 2>&1 && echo "$lib"
         done | sort -u > "$MT/vendor-orig/.list"
@@ -286,8 +288,9 @@ PY2
             || { log "cannot push the patched guest $lib"; exit 2; }
         log "IMEI patched in guest $lib: $out"
     done < "$MT/vendor-orig/.list"
-    # No guest file held a known default IMEI: the system image changed, so the patch did nothing.
-    [ "$hits" -gt 0 ] || { log "no default IMEI found in the guest RIL files (system image changed?)"; exit 2; }
+    # No guest file holds a known default IMEI (later images can ask the modem instead). Not fatal
+    # here: wait_imei and the ids check still fail the run if Android reports another IMEI.
+    [ "$hits" -gt 0 ] || log "no default IMEI in the guest RIL files; relying on the modem's IMEI (checked after boot)"
 }
 
 # Build.DISPLAY, MODEL, MANUFACTURER, BRAND: make the device look like a real phone. The stock
