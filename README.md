@@ -33,6 +33,9 @@ cp my-dpc.apk work/agent.apk        # optional: served at http://10.0.2.2:8099/a
 docker run --rm --device /dev/kvm --cap-add NET_ADMIN --sysctl net.ipv6.conf.all.disable_ipv6=0 -v "$PWD/work:/work" ghcr.io/theboyknowsclass/docker-android-mdm-ready:<sha> e2e
 ```
 
+> **Always pass `--cap-add NET_ADMIN --sysctl net.ipv6.conf.all.disable_ipv6=0`.** The emulator's modem connects over IPv6 localhost (`[::1]`), and Docker gives containers no IPv6 by default. Without the flags there is no modem: no SIM, no IMEI, no phone number, and a DPC reports a different device id. The container now refuses to boot without them (`ALLOW_NO_MODEM=1` overrides this).
+
+- **Readiness:** after boot (and after each reset) the container waits until Android reports the IMEI, then creates `/tmp/device-ready`. A DPC that reads the IMEI too early falls back to another id and can keep it, so wait on it before provisioning: `docker exec <c> test -f /tmp/device-ready`.
 - Pin a 7-character commit tag (`:<sha>`, e.g. `:8fe8a3d`) in scripts, compose files and CI. Every push to `main` moves `:latest`, so it is only for trying the image out.
 - The same tags are on Docker Hub as `docker.io/theboyknowsclass/docker-android-mdm-ready`.
 
@@ -63,13 +66,17 @@ Each container start gets a new random identity, so every run enrols as a new de
 
 | Name | Format | Random default |
 |---|---|---|
-| `DEVICE_SERIAL` | 1-20 letters/digits (`Build.getSerial()`, `ro.serialno`) | `MDMR` + 12 hex |
+| `DEVICE_SERIAL` | 1-16 letters/digits (`Build.getSerial()`, `ro.serialno`), so `S` + serial fits a 17-character device id (`T?[a-zA-Z0-9]{0,17}`) | 14 upper-case letters/digits, Pixel style (e.g. `28041FDH2003K7`) |
 | `DEVICE_IMEI` | 15 digits | `35` + 12 random + Luhn check digit |
+| `DEVICE_IMEI_TAC` | 8 digits: type allocation code (model id) for random IMEIs | `35` + 6 random digits |
 | `DEVICE_SSAID_KEY` | 64 hex | random |
 | `DEVICE_PHONE` | SIM phone number, 3-11 digits, optional `+` (the emulator ignores longer ones) | `1555` + 7 digits |
 | `DEVICE_IMSI` | 15 digits | `310260` + 9 digits (keeps the emulator's MCC 310 / MNC 260) |
 | `DEVICE_ICCID` | 19-20 digits | `8901` + 15 digits + Luhn check digit |
 | `DEVICE_WIFI_MAC` | `aa:bb:cc:dd:ee:ff` | `02:` + 5 random bytes (locally administered) |
+| `DEVICE_MODEL` | 1-40 letters, digits, spaces or `. _ -` (`Build.MODEL`) | `Pixel 6` (the AVD is a `pixel_6`) |
+| `DEVICE_MANUFACTURER` | same format (`Build.MANUFACTURER`; `Build.BRAND` is the lower-case form) | `Google` |
+| `DEVICE_BUILD_DISPLAY` | 1-40 letters, digits, spaces or `. _ -` (`Build.DISPLAY`, `ro.build.display.id`). The stock value is 63 characters, too long for schemas that cap it at 40 | `<ro.build.id>`, as on real user builds, e.g. `UE1A.230829.050` |
 
 On Android 8+ `ANDROID_ID` differs per app; Android derives it from `DEVICE_SSAID_KEY`, so the same key and the same app give the same `ANDROID_ID`.
 
