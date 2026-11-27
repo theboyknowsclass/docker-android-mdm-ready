@@ -71,7 +71,7 @@ jobs:
           done
           docker logs ready | tail -15
           docker exec ready test -f /tmp/device-ready
-          docker exec ready adb -s emulator-5554 shell service call iphonesubinfo 1 s16 root | tr -d "'.[:space:]" | grep -q 356938035643809
+          docker exec ready adb -s emulator-5554 shell service call iphonesubinfo 1 s16 root | grep -oE "'[^']*'" | tr -d "'.[:space:]" | grep -q 356938035643809
           docker rm -f ready
 
       - name: Keep identity check output
