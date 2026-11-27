@@ -501,12 +501,25 @@ owner_ok() {
 # gets ADMIN_POLICY_COMPLIANCE (where DPCs usually register). Send it, then tap through the DPC's
 # own screens until it is no longer in front (or DPC_ROUNDS rounds pass).
 finalize_provisioning() {
-    local pkg=${DPC%%/*} r ui b idle=0
+    local pkg=${DPC%%/*} r ui b top idle=0
+    # The DPC may send the user to Settings for "modify system settings": grant it up front.
+    $A shell appops set "$pkg" WRITE_SETTINGS allow 2>/dev/null
     log "send PROVISION_FINALIZATION"
     $A shell am start -a android.app.action.PROVISION_FINALIZATION 2>&1 | tail -2
     sleep 5
     for r in $(seq 1 "${DPC_ROUNDS:-8}"); do
-        if ! $A shell dumpsys activity activities 2>/dev/null | grep -E 'mResumedActivity|topResumedActivity' | grep -q "$pkg"; then
+        top=$($A shell dumpsys activity activities 2>/dev/null | grep -E 'mResumedActivity|topResumedActivity' | head -1)
+        if grep -q 'com.android.settings' <<<"$top"; then
+            # Settings opened by the DPC (e.g. WRITE_SETTINGS): grant it and go back to the DPC.
+            idle=0
+            $A shell appops set "$pkg" WRITE_SETTINGS allow 2>/dev/null
+            $A exec-out screencap -p > "$OUT/dpc-$r-settings.png" 2>/dev/null
+            $A shell input keyevent KEYCODE_BACK
+            log "DPC round $r: Settings in front, granted WRITE_SETTINGS and pressed Back"
+            sleep 5
+            continue
+        fi
+        if ! grep -q "$pkg" <<<"$top"; then
             idle=$((idle + 1))
             [ "$idle" -ge 2 ] && { log "DPC is no longer in front: finished"; return 0; }
             sleep 5
