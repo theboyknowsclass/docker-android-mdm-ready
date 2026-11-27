@@ -22,6 +22,9 @@
 #   DEVICE_IMSI        15 digits; random ones keep the emulator's 310260 (MCC 310, MNC 260)
 #   DEVICE_ICCID       SIM serial, 19-20 digits; random ones are 89 + digits + Luhn check digit
 #   DEVICE_WIFI_MAC    wlan0 MAC, aa:bb:cc:dd:ee:ff; random ones are locally administered unicast
+#   DEVICE_BUILD_DISPLAY  Build.DISPLAY (ro.build.display.id), 1-40 chars: letters, digits, space . _ -
+#                      default "sdk_gphone64 <ro.build.id>"; the stock value is 63 chars, which server
+#                      schemas that cap it at 40 reject
 #
 # VIEW=1 (any command): show the emulator window live in a browser through noVNC on port 6080
 #   docker run ... -e VIEW=1 -p 6080:6080 ... then open http://localhost:6080/vnc.html?autoconnect=1
@@ -95,9 +98,11 @@ pick_ids() {
     [[ $DEVICE_IMSI =~ ^[0-9]{15}$ ]] || { log "DEVICE_IMSI must be 15 digits"; exit 2; }
     [[ $DEVICE_ICCID =~ ^[0-9]{19,20}$ ]] || { log "DEVICE_ICCID must be 19-20 digits"; exit 2; }
     [[ $DEVICE_WIFI_MAC =~ ^[0-9A-Fa-f]{2}(:[0-9A-Fa-f]{2}){5}$ ]] || { log "DEVICE_WIFI_MAC must be aa:bb:cc:dd:ee:ff"; exit 2; }
+    [ -z "${DEVICE_BUILD_DISPLAY:-}" ] || [[ $DEVICE_BUILD_DISPLAY =~ ^[A-Za-z0-9\ ._-]{1,40}$ ]] \
+        || { log "DEVICE_BUILD_DISPLAY must be 1-40 letters, digits, spaces or . _ -"; exit 2; }
     DEVICE_SSAID_KEY=$(tr a-f A-F <<<"$DEVICE_SSAID_KEY")
     DEVICE_WIFI_MAC=$(tr A-F a-f <<<"$DEVICE_WIFI_MAC")
-    export DEVICE_SERIAL DEVICE_IMEI DEVICE_SSAID_KEY DEVICE_PHONE DEVICE_IMSI DEVICE_ICCID DEVICE_WIFI_MAC
+    export DEVICE_SERIAL DEVICE_IMEI DEVICE_SSAID_KEY DEVICE_PHONE DEVICE_IMSI DEVICE_ICCID DEVICE_WIFI_MAC DEVICE_BUILD_DISPLAY
     log "identity: serial=$DEVICE_SERIAL imei=$DEVICE_IMEI phone=$DEVICE_PHONE imsi=$DEVICE_IMSI iccid=$DEVICE_ICCID mac=$DEVICE_WIFI_MAC ssaid_key=${DEVICE_SSAID_KEY:0:8}..."
 }
 
@@ -220,6 +225,22 @@ PY2
     done
     # Neither library held a known default IMEI: the system image changed, so the patch did nothing.
     [ "$hits" -gt 0 ] || { log "no default IMEI found in the guest RIL libraries (system image changed?)"; exit 2; }
+}
+
+# Build.DISPLAY: the stock ro.build.display.id is 63 characters, longer than some server schemas
+# accept (40). Set a short one in every build.prop that defines it; it takes effect on the next boot.
+# Needs the remount done by patch_guest_imei.
+set_build_display() {
+    local want=${DEVICE_BUILD_DISPLAY:-}
+    if [ -z "$want" ]; then
+        want="sdk_gphone64 $($A shell getprop ro.build.id | tr -d '\r')"
+    fi
+    [ ${#want} -le 40 ] || { log "build display id '$want' is longer than 40 characters"; exit 2; }
+    DEVICE_BUILD_DISPLAY=$want
+    export DEVICE_BUILD_DISPLAY
+    $A shell "n=0; for f in /system/build.prop /system_ext/etc/build.prop /product/etc/build.prop /vendor/build.prop /odm/etc/build.prop /vendor/odm/etc/build.prop; do if [ -f \$f ] && grep -q '^ro.build.display.id=' \$f; then sed -i 's/^ro.build.display.id=.*/ro.build.display.id=$want/' \$f && n=\$((n+1)); fi; done; echo \$n" \
+        | tr -d '\r' | grep -q '^[1-9]' || { log "ro.build.display.id not found in any build.prop"; exit 2; }
+    log "build display id: $want"
 }
 
 # Android derives each app's ANDROID_ID from a per-user key in settings_ssaid.xml. Writing a new key
@@ -358,6 +379,7 @@ reset_device() {
     $A shell 'rm -f /data/system/users/0/settings_global.xml /data/system/users/0/settings_secure.xml /data/system/users/0/settings_system.xml /data/system/users/0/settings_ssaid.xml /data/system/device_policies.xml /data/system/device_policy_state.xml /data/system/device_owner_2.xml'
     write_ssaid
     patch_guest_imei
+    set_build_display
     restart_emu
     if [ -n "$DPC" ]; then
         $A shell pm uninstall "${DPC%%/*}" >/dev/null 2>&1
@@ -530,9 +552,10 @@ cmd_ids() {
     start_emu
     reset_device
     sleep 15
-    local ok=0 serial mac sim imei imsi at_imei
+    local ok=0 serial mac sim imei imsi at_imei display
     sub() { $A shell service call iphonesubinfo "$1" s16 root 2>/dev/null | grep -oE "'[^']*'" | tr -d "'.[:space:]"; }
     serial=$($A shell getprop ro.serialno | tr -d '\r')
+    display=$($A shell getprop ro.build.display.id | tr -d '\r')
     mac=$($A shell cat /sys/class/net/wlan0/address | tr -d '\r')
     sim=$($A shell content query --uri content://telephony/siminfo --projection icc_id:number 2>/dev/null | tr -d '\r')
     imei=$(sub 1)
@@ -557,10 +580,11 @@ PY2
 )
     $A shell getprop > "$OUT/getprop.txt" 2>&1
     $A logcat -d > "$OUT/logcat.txt" 2>&1
-    log "Android reports: serial=$serial wifi_mac=$mac imei=$imei (modem: $at_imei) imsi=$imsi sim: $sim"
+    log "Android reports: serial=$serial display=$display wifi_mac=$mac imei=$imei (modem: $at_imei) imsi=$imsi sim: $sim"
     check() { if [ "$2" = 1 ]; then log "$1 OK"; else log "$1 NOT applied"; ok=1; fi; }
     check serial "$([ "$serial" = "$DEVICE_SERIAL" ] && echo 1)"
     check wifi_mac "$([ "$mac" = "$DEVICE_WIFI_MAC" ] && echo 1)"
+    check build_display "$([ "$display" = "$DEVICE_BUILD_DISPLAY" ] && [ ${#display} -le 40 ] && echo 1)"
     check imei "$([ "$imei" = "$DEVICE_IMEI" ] && echo 1)"
     check imsi "$([ "$imsi" = "$DEVICE_IMSI" ] && echo 1)"
     check iccid "$(grep -q "icc_id=$DEVICE_ICCID" <<<"$sim" && echo 1)"

@@ -70,6 +70,7 @@ Each container start gets a new random identity, so every run enrols as a new de
 | `DEVICE_IMSI` | 15 digits | `310260` + 9 digits (keeps the emulator's MCC 310 / MNC 260) |
 | `DEVICE_ICCID` | 19-20 digits | `8901` + 15 digits + Luhn check digit |
 | `DEVICE_WIFI_MAC` | `aa:bb:cc:dd:ee:ff` | `02:` + 5 random bytes (locally administered) |
+| `DEVICE_BUILD_DISPLAY` | 1-40 letters, digits, spaces or `. _ -` (`Build.DISPLAY`, `ro.build.display.id`). The stock value is 63 characters, too long for schemas that cap it at 40 | `sdk_gphone64 <ro.build.id>`, e.g. `sdk_gphone64 UE1A.230829.050` |
 
 On Android 8+ `ANDROID_ID` differs per app; Android derives it from `DEVICE_SSAID_KEY`, so the same key and the same app give the same `ANDROID_ID`.
 
