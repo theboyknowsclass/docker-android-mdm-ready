@@ -15,6 +15,8 @@ import com.google.zxing.Binarizer;
 import com.google.zxing.BinaryBitmap;
 import com.google.zxing.DecodeHintType;
 import com.google.zxing.InvertedLuminanceSource;
+import com.google.zxing.LuminanceSource;
+import com.google.zxing.RGBLuminanceSource;
 import com.google.zxing.PlanarYUVLuminanceSource;
 import com.google.zxing.Result;
 import com.google.zxing.common.GlobalHistogramBinarizer;
@@ -34,6 +36,7 @@ import java.util.Map;
  */
 public class ScanActivity extends Activity implements TextureView.SurfaceTextureListener, Camera.PreviewCallback {
     private static final String TAG = "QRSCAN";
+    private static final double[] SCALES = {1.0, 0.75, 0.6, 0.9};
     private Camera camera;
     private TextView status;
     private final QRCodeReader reader = new QRCodeReader();
@@ -101,14 +104,23 @@ public class ScanActivity extends Activity implements TextureView.SurfaceTexture
             saveFrame(data);
         }
         try {
-            PlanarYUVLuminanceSource src = new PlanarYUVLuminanceSource(data, width, height, 0, 0, width, height, false);
-            Result r = decode(new HybridBinarizer(src));
-            if (r == null) {
-                r = decode(new GlobalHistogramBinarizer(src));
-            }
-            if (r == null) {
-                // grey-on-black pictures: try the negative too
-                r = decode(new HybridBinarizer(new InvertedLuminanceSource(src)));
+            // On dense QRs (version 20+) ZXing can misjudge the module size in the emulator's camera
+            // picture and throw FormatException; a rescaled frame usually decodes. Tested on the laptop.
+            Result r = null;
+            for (double scale : SCALES) {
+                LuminanceSource src = scaled(data, scale);
+                r = decode(new HybridBinarizer(src));
+                if (r == null && scale == 1.0) {
+                    r = decode(new GlobalHistogramBinarizer(src));
+                }
+                if (r == null && scale == 1.0) {
+                    // grey-on-black pictures: try the negative too
+                    r = decode(new HybridBinarizer(new InvertedLuminanceSource(src)));
+                }
+                if (r != null) {
+                    Log.i(TAG, "decoded at scale " + scale);
+                    break;
+                }
             }
             if (r == null) {
                 if (frames % 30 == 0) {
@@ -128,6 +140,31 @@ public class ScanActivity extends Activity implements TextureView.SurfaceTexture
         } catch (Exception e) {
             Log.e(TAG, "frame " + frames + " failed", e);
         }
+    }
+
+    // The frame's luminance, scaled by `scale` (box average when shrinking).
+    private LuminanceSource scaled(byte[] y, double scale) {
+        if (scale == 1.0) {
+            return new PlanarYUVLuminanceSource(y, width, height, 0, 0, width, height, false);
+        }
+        int w = (int) (width * scale), h = (int) (height * scale);
+        int[] px = new int[w * h];
+        for (int j = 0; j < h; j++) {
+            int y0 = (int) (j / scale), y1 = Math.max(y0 + 1, Math.min(height, (int) ((j + 1) / scale)));
+            for (int i = 0; i < w; i++) {
+                int x0 = (int) (i / scale), x1 = Math.max(x0 + 1, Math.min(width, (int) ((i + 1) / scale)));
+                int sum = 0, n = 0;
+                for (int yy = y0; yy < y1; yy++) {
+                    for (int xx = x0; xx < x1; xx++) {
+                        sum += y[yy * width + xx] & 0xff;
+                        n++;
+                    }
+                }
+                int v = sum / n;
+                px[j * w + i] = 0xff000000 | (v << 16) | (v << 8) | v;
+            }
+        }
+        return new RGBLuminanceSource(w, h, px);
     }
 
     private Result decode(Binarizer b) {
