@@ -272,16 +272,26 @@ src, dst, imei = sys.argv[1:4]
 b = open(src, "rb").read()
 counts = []
 total = 0
-# Android 15's libril-modem-lib copies the first 7 digits from elsewhere ("8674000", a separate
-# literal) next to the "22047199" immediate, so the 7-digit prefix is swapped as well, after the
-# longer forms (no other 7-digit run like it is in these libraries).
+# Android 15's libril-modem-lib writes the first 7 digits as two overlapping 4-byte stores to the
+# stack, "8674" at d and "4000" at d+3 (mov dword [rsp+d], imm32 = c7 44 24 d imm32), next to the
+# "22047199" immediate. Only that exact instruction pair is patched.
+import re
+def split_prefix(m):
+    d1, d2 = m.group(1)[0], m.group(2)[0]
+    if d2 != d1 + 3:
+        return m.group(0)
+    return (b"\xc7\x44\x24" + bytes([d1]) + imei[0:4].encode()
+            + b"\xc7\x44\x24" + bytes([d2]) + imei[3:7].encode())
+b, split = re.subn(rb"\xc7\x44\x24(.)8674\xc7\x44\x24(.)4000", split_prefix, b, flags=re.S)
+counts.append("split-prefix=%d" % split)
+total += split
 for old, new in ((b"867400022047199", imei), (b"358240051111110", imei),
-                 (b"86740002", imei[:8]), (b"22047199", imei[7:]), (b"8674000", imei[:7])):
+                 (b"86740002", imei[:8]), (b"22047199", imei[7:])):
     n = b.count(old)
     total += n
     counts.append("%s=%d" % (old.decode(), n))
     b = b.replace(old, new.encode())
-if b.count(imei[7:].encode()) and not b.count(imei[:7].encode()):
+if split == 0 and b.count(imei[7:].encode()) and not b.count(imei[:7].encode()):
     # the prefix is still somewhere else: show where "8674" appears, to extend this patch
     src_b = open(src, "rb").read()
     for k in [i for i in range(len(src_b)) if src_b.startswith(b"8674", i)][:8]:
