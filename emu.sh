@@ -183,30 +183,41 @@ set_wifi_mac() {
 
 # Android 14 asks the guest radio HAL for the IMEI (DEVICE_IMEI), and the emulator's RIL libraries
 # answer from a built-in value instead of asking the modem. Patch them on the (remounted) vendor
-# partition; originals are kept in the container under $MT/vendor-orig.
+# partition; originals are kept in the container under $MT/vendor-orig. Any failure is fatal: a
+# device that silently reports the default IMEI looks like every other device to the server.
 patch_guest_imei() {
-    local lib out
-    $A remount >/dev/null 2>&1 || { log "WARNING: remount failed; Android will report the default IMEI"; return 0; }
+    local lib out hits=0
+    $A remount >/dev/null 2>&1 || { log "remount failed; cannot patch the guest IMEI"; exit 2; }
     mkdir -p "$MT/vendor-orig"
     for lib in libcuttlefish-ril-2.so libril-modem-lib.so; do
-        [ -f "$MT/vendor-orig/$lib" ] || $A pull "/vendor/lib64/$lib" "$MT/vendor-orig/$lib" >/dev/null 2>&1 || continue
+        if [ ! -f "$MT/vendor-orig/$lib" ]; then
+            $A pull "/vendor/lib64/$lib" "$MT/vendor-orig/$lib" >/dev/null 2>&1 \
+                || { log "cannot pull guest $lib for the IMEI patch"; exit 2; }
+        fi
         out=$(python3 - "$MT/vendor-orig/$lib" "/tmp/$lib" "$DEVICE_IMEI" <<'PY2'
 import sys
 src, dst, imei = sys.argv[1:4]
 b = open(src, "rb").read()
 counts = []
+total = 0
 for old, new in ((b"867400022047199", imei), (b"358240051111110", imei),
                  (b"86740002", imei[:8]), (b"22047199", imei[7:])):
-    counts.append("%s=%d" % (old.decode(), b.count(old)))
+    n = b.count(old)
+    total += n
+    counts.append("%s=%d" % (old.decode(), n))
     b = b.replace(old, new.encode())
 open(dst, "wb").write(b)
-print(" ".join(counts))
+print("total=%d %s" % (total, " ".join(counts)))
 PY2
-) || { log "IMEI patch failed for $lib"; continue; }
+) || { log "IMEI patch failed for guest $lib"; exit 2; }
+        case $out in total=0\ *) ;; *) hits=$((hits + 1)) ;; esac
         $A push "/tmp/$lib" "/vendor/lib64/$lib" >/dev/null 2>&1 \
             && $A shell "chmod 644 /vendor/lib64/$lib; chown root:root /vendor/lib64/$lib; restorecon /vendor/lib64/$lib" \
-            && log "IMEI patched in guest $lib: $out"
+            || { log "cannot push the patched guest $lib"; exit 2; }
+        log "IMEI patched in guest $lib: $out"
     done
+    # Neither library held a known default IMEI: the system image changed, so the patch did nothing.
+    [ "$hits" -gt 0 ] || { log "no default IMEI found in the guest RIL libraries (system image changed?)"; exit 2; }
 }
 
 # Android derives each app's ANDROID_ID from a per-user key in settings_ssaid.xml. Writing a new key

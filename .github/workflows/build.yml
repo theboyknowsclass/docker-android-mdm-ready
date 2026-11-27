@@ -3,6 +3,7 @@ name: build
 on:
   push:
     branches: [main]
+  pull_request:
   workflow_dispatch:
 
 permissions:
@@ -60,6 +61,7 @@ jobs:
           if-no-files-found: ignore
 
       - name: Push to GHCR
+        if: github.event_name != 'pull_request'
         run: |
           echo "${{ secrets.GITHUB_TOKEN }}" | docker login ghcr.io -u "${{ github.actor }}" --password-stdin
           IMG="ghcr.io/${GITHUB_REPOSITORY,,}"
@@ -69,6 +71,7 @@ jobs:
           docker push "$IMG:${GITHUB_SHA::7}"
 
       - name: Push to Docker Hub (only when DOCKER_HUB_USERNAME and DOCKER_HUB_TOKEN secrets are set)
+        if: github.event_name != 'pull_request'
         env:
           DH_USER: ${{ secrets.DOCKER_HUB_USERNAME }}
           DH_TOKEN: ${{ secrets.DOCKER_HUB_TOKEN }}
