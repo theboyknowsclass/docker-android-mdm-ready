@@ -242,15 +242,27 @@ set_wifi_mac() {
 # partition; originals are kept in the container under $MT/vendor-orig. Any failure is fatal: a
 # device that silently reports the default IMEI looks like every other device to the server.
 patch_guest_imei() {
-    local lib out hits=0
+    local lib libs name out hits=0
     $A remount >/dev/null 2>&1 || { log "remount failed; cannot patch the guest IMEI"; exit 2; }
     mkdir -p "$MT/vendor-orig"
-    for lib in libcuttlefish-ril-2.so libril-modem-lib.so; do
-        if [ ! -f "$MT/vendor-orig/$lib" ]; then
-            $A pull "/vendor/lib64/$lib" "$MT/vendor-orig/$lib" >/dev/null 2>&1 \
+    # Android 14 keeps the default IMEI in these two; later images may move it, so also look for
+    # any vendor library or HAL binary that holds one (only on the first run: the originals are kept).
+    libs="/vendor/lib64/libcuttlefish-ril-2.so /vendor/lib64/libril-modem-lib.so"
+    if [ ! -f "$MT/vendor-orig/.list" ]; then
+        libs="$libs $($A shell "grep -l -e 867400022047199 -e 358240051111110 /vendor/lib64/*.so /vendor/bin/hw/* 2>/dev/null" | tr -d '\r')"
+        for lib in $libs; do
+            $A shell "test -f $lib" >/dev/null 2>&1 && echo "$lib"
+        done | sort -u > "$MT/vendor-orig/.list"
+        log "guest files to patch for the IMEI: $(tr '\n' ' ' < "$MT/vendor-orig/.list")"
+    fi
+    while read -r lib; do
+        [ -n "$lib" ] || continue
+        name=$(echo "$lib" | tr '/' '_')
+        if [ ! -f "$MT/vendor-orig/$name" ]; then
+            $A pull "$lib" "$MT/vendor-orig/$name" >/dev/null 2>&1 \
                 || { log "cannot pull guest $lib for the IMEI patch"; exit 2; }
         fi
-        out=$(python3 - "$MT/vendor-orig/$lib" "/tmp/$lib" "$DEVICE_IMEI" <<'PY2'
+        out=$(python3 - "$MT/vendor-orig/$name" "/tmp/$name" "$DEVICE_IMEI" <<'PY2'
 import sys
 src, dst, imei = sys.argv[1:4]
 b = open(src, "rb").read()
@@ -266,14 +278,14 @@ open(dst, "wb").write(b)
 print("total=%d %s" % (total, " ".join(counts)))
 PY2
 ) || { log "IMEI patch failed for guest $lib"; exit 2; }
-        case $out in total=0\ *) ;; *) hits=$((hits + 1)) ;; esac
-        $A push "/tmp/$lib" "/vendor/lib64/$lib" >/dev/null 2>&1 \
-            && $A shell "chmod 644 /vendor/lib64/$lib; chown root:root /vendor/lib64/$lib; restorecon /vendor/lib64/$lib" \
+        case $out in total=0\ *) continue ;; *) hits=$((hits + 1)) ;; esac
+        $A push "/tmp/$name" "$lib" >/dev/null 2>&1 \
+            && $A shell "chmod 644 $lib; case $lib in */bin/*) chmod 755 $lib ;; esac; chown root:root $lib; restorecon $lib" \
             || { log "cannot push the patched guest $lib"; exit 2; }
         log "IMEI patched in guest $lib: $out"
-    done
-    # Neither library held a known default IMEI: the system image changed, so the patch did nothing.
-    [ "$hits" -gt 0 ] || { log "no default IMEI found in the guest RIL libraries (system image changed?)"; exit 2; }
+    done < "$MT/vendor-orig/.list"
+    # No guest file held a known default IMEI: the system image changed, so the patch did nothing.
+    [ "$hits" -gt 0 ] || { log "no default IMEI found in the guest RIL files (system image changed?)"; exit 2; }
 }
 
 # Build.DISPLAY, MODEL, MANUFACTURER, BRAND: make the device look like a real phone. The stock
