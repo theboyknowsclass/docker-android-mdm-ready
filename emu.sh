@@ -10,7 +10,9 @@
 #             assert the DPC from the QR is Device Owner. Exit 0 = pass.
 #   e2e-sw    reset, 6 taps on the Setup Wizard welcome screen, its own QR reader scans /work/qr.png,
 #             assert Device Owner. Exit 0 = pass.
-#   start     boot the emulator with /work/qr.png on the camera and keep running (docker exec ... adb shell).
+#   scan      boot, decode /work/qr.png with the test scanner, compare with /work/qr.json. Exit 0 = pass.
+#   start     boot the emulator with /work/qr.png on the camera, reset to un-set-up, wait until the
+#             device is ready (/tmp/device-ready) and keep running (docker exec ... adb shell).
 #   ids       boot, apply the device identity below and print what Android reports. Exit 0 = all took.
 #
 # Device identity (any command that boots): random per container start unless set.
@@ -46,8 +48,12 @@ WORK=${WORK:-/work}
 OUT=$WORK/out
 CAM_SIZE=${CAM_SIZE:-800}
 CAM_CANVAS=${CAM_CANVAS:-2000}
+CAM_CANVAS_W=${CAM_CANVAS_W:-$CAM_CANVAS}
+CAM_CANVAS_H=${CAM_CANVAS_H:-$CAM_CANVAS}
 CAM_XOFF=${CAM_XOFF:--447}
 BUTTONS=${BUTTONS:-Next|Accept|Accept &amp; continue|Continue|Agree|I agree|OK|Done}
+# extra buttons tapped on the DPC's own screens after PROVISION_FINALIZATION
+DPC_BUTTONS=${DPC_BUTTONS:-NEXT|CONTINUE|Grant Permission|GRANT PERMISSION|Allow|ALLOW|CONFIRM &(amp;)? [A-Z]+|Confirm &(amp;)? [a-z]+|ENROL|Enrol|ENROLL|Enroll|FINISH|Finish}
 SCANNER=dev.mdmready.qrscan
 SETUPWIZARD=com.google.android.setupwizard
 A="adb -s emulator-5554"
@@ -308,6 +314,12 @@ EOF
     $A shell 'chown system:system /data/system/users/0/settings_ssaid.xml; chmod 600 /data/system/users/0/settings_ssaid.xml; restorecon /data/system/users/0/settings_ssaid.xml'
 }
 
+# Is DEVICE_SSAID_KEY the user key Android uses? system_server rewrites the file in binary XML (ABX).
+ssaid_ok() {
+    $A shell "f=/data/system/users/0/settings_ssaid.xml; abx2xml \$f - 2>/dev/null || cat \$f" 2>/dev/null \
+        | grep -i 'name="userkey"' | grep -qi "$DEVICE_SSAID_KEY"
+}
+
 log() { echo "[$(date +%H:%M:%S)] $*"; }
 
 fail() {
@@ -368,7 +380,7 @@ start_emu() {
     fi
     local cam=emulated
     if [ -f "$WORK/qr.png" ]; then
-        java -Djava.awt.headless=true -cp "$MT" Pad "$WORK/qr.png" /tmp/qrpad.png "$CAM_SIZE" "$CAM_CANVAS" "$CAM_CANVAS" "$CAM_XOFF" || exit 2
+        java -Djava.awt.headless=true -cp "$MT" Pad "$WORK/qr.png" /tmp/qrpad.png "$CAM_SIZE" "$CAM_CANVAS_W" "$CAM_CANVAS_H" "$CAM_XOFF" || exit 2
         cam=imagefile:/tmp/qrpad.png
     fi
     # once per container start (restarts keep the identity); fills in whatever was not set
@@ -435,6 +447,13 @@ reset_device() {
     patch_guest_imei
     set_build_props
     restart_emu
+    # system_server can write its in-memory key back while the emulator is killed; one more go
+    if ! ssaid_ok; then
+        log "SSAID key did not take, writing it again"
+        write_ssaid
+        restart_emu
+        ssaid_ok || log "WARNING: SSAID key still not applied"
+    fi
     if [ -n "$DPC" ]; then
         $A shell pm uninstall "${DPC%%/*}" >/dev/null 2>&1
     fi
@@ -479,7 +498,60 @@ owner_ok() {
     $A shell dumpsys device_policy 2>/dev/null | grep -A1 'Device Owner:' | grep -q "admin=ComponentInfo{$DPC}"
 }
 
-# Up to $1 rounds: stop once $DPC is Device Owner, otherwise tap the first button matching $BUTTONS.
+# Laptop-tested against a real enrolment server: ManagedProvisioning screens, then (once it has left
+# the foreground) PROVISION_FINALIZATION, then the DPC's own screens until it leaves the foreground.
+# uiautomator writes "&" as "&amp;", so the patterns accept both.
+finalize_provisioning() {
+    local rounds=${DPC_ROUNDS:-20} r ui b top sent=0 pkg=${DPC%%/*}
+    for r in $(seq 1 "$rounds"); do
+        top=$($A shell dumpsys activity activities 2>/dev/null | grep -m1 topResumedActivity | grep -oE 'u0 [^ /]+' | cut -c4-)
+        case "$top" in
+            com.android.settings)
+                # the DPC asked for "modify system settings"
+                $A shell appops set "$pkg" WRITE_SETTINGS allow
+                $A shell input keyevent KEYCODE_BACK
+                log "granted $pkg WRITE_SETTINGS"
+                sleep 5
+                continue ;;
+            "$pkg" | com.android.managedprovisioning) ;;
+            *)
+                if [ "$sent" = 0 ]; then
+                    log "finalize provisioning (the Setup Wizard's last step)"
+                    $A shell am start -a android.app.action.PROVISION_FINALIZATION >/dev/null 2>&1
+                    sent=1
+                    sleep 5
+                    continue
+                fi
+                log "DPC setup done (top: ${top:-none})"
+                return 0 ;;
+        esac
+        $A shell uiautomator dump /sdcard/ui.xml >/dev/null 2>&1
+        ui=$($A exec-out cat /sdcard/ui.xml 2>/dev/null)
+        log "${top##*.} screen $r: $(grep -oE 'text="[^"]+"' <<<"$ui" | tr '\n' ' ' | cut -c1-200)"
+        $A exec-out screencap -p > "$OUT/final-$r.png" 2>/dev/null
+        b=$(grep -oE "text=\"($BUTTONS|$DPC_BUTTONS)\"[^>]*bounds=\"\[[0-9]+,[0-9]+\]\[[0-9]+,[0-9]+\]\"" <<<"$ui" | head -1 | grep -oE '\[[0-9]+,[0-9]+\]\[[0-9]+,[0-9]+\]')
+        if [ -n "$b" ]; then
+            set -- $(grep -oE '[0-9]+' <<<"$b")
+            $A shell input tap $(( ($1 + $3) / 2 )) $(( ($2 + $4) / 2 ))
+            log "tapped $b"
+        fi
+        sleep 8
+    done
+    log "provisioning or DPC setup still in front after $rounds rounds"
+    return 1
+}
+
+# KEEP_RUNNING=1: leave the emulator up after a passing e2e (the DPC can register and receive
+# commands); the container then runs until it is stopped.
+keep_or_stop() {
+    if [ "${KEEP_RUNNING:-0}" = 1 ]; then
+        touch /tmp/device-ready
+        log "KEEP_RUNNING=1: emulator stays up; docker exec -it <container> adb shell"
+        tail -f /tmp/emulator.log
+    fi
+    stop_emu
+}
+
 tap_through() {
     local rounds=$1 r ui b
     for r in $(seq 1 "$rounds"); do
@@ -503,6 +575,47 @@ report() {
     $A logcat -d > "$OUT/logcat.txt" 2>/dev/null
     grep -E 'ManagedProvisioning' "$OUT/logcat.txt" | grep -iE 'download|checksum|install|success|complete|error|fail' | tail -8 | cut -c1-200
     grep -iE 'GET_PROVISIONING_MODE|onEnabled' "$OUT/logcat.txt" | tail -4 | cut -c1-200
+}
+
+# Scan /work/qr.png with the test scanner app (it is on the back camera since boot); the decoded text
+# goes to $OUT/decoded.json. $OUT/camera-frame.png is what the camera delivered, for debugging;
+# FRAME_LOG=1 also prints it base64-encoded to the log (for CI, where files are hard to reach).
+scan_qr() {
+    local ok=0
+    log "scan with the test scanner app"
+    $A shell pm grant $SCANNER android.permission.CAMERA
+    $A shell am force-stop $SCANNER
+    $A logcat -c
+    $A shell am start -n $SCANNER/.ScanActivity >/dev/null
+    for _ in $(seq 1 45); do
+        sleep 2
+        $A logcat -d -s QRSCAN | grep -q RESULT && { ok=1; break; }
+    done
+    $A logcat -d -s QRSCAN | grep -E 'preview|luma|saved' | tail -6 | cut -c1-200
+    $A shell "cat /data/data/$SCANNER/files/frame.png > /data/local/tmp/frame.png" 2>/dev/null
+    $A exec-out cat /data/local/tmp/frame.png > "$OUT/camera-frame.png" 2>/dev/null
+    if [ "${FRAME_LOG:-0}" = 1 ] && [ -s "$OUT/camera-frame.png" ]; then
+        echo "-----BEGIN CAMERA FRAME-----"
+        base64 -w 0 "$OUT/camera-frame.png"
+        echo
+        echo "-----END CAMERA FRAME-----"
+    fi
+    [ "$ok" = 1 ] || fail "scanner did not decode the QR in 90 s (camera picture: $OUT/camera-frame.png)"
+    $A shell "cat /data/data/$SCANNER/files/qr.txt > /data/local/tmp/qr.json"
+    $A exec-out cat /data/local/tmp/qr.json > "$OUT/decoded.json"
+    $A shell am force-stop $SCANNER
+    log "decoded $(wc -c < "$OUT/decoded.json") bytes"
+}
+
+# Scan only: boot with /work/qr.png on the camera, decode it, compare with /work/qr.json if present.
+cmd_scan() {
+    [ -f "$WORK/qr.png" ] || { log "need $WORK/qr.png"; exit 2; }
+    mkdir -p "$OUT"
+    start_emu
+    scan_qr
+    check_decoded
+    log "PASS: QR decoded"
+    stop_emu
 }
 
 check_decoded() {
@@ -648,7 +761,7 @@ PY2
     check imsi "$([ "$imsi" = "$DEVICE_IMSI" ] && echo 1)"
     check iccid "$(grep -q "icc_id=$DEVICE_ICCID" <<<"$sim" && echo 1)"
     check phone "$(grep -q "number=+\?${DEVICE_PHONE#+}" <<<"$sim" && echo 1)"
-    check ssaid_key "$($A shell grep -c "$DEVICE_SSAID_KEY" /data/system/users/0/settings_ssaid.xml 2>/dev/null | tr -d '\r' | grep -q '^[1-9]' && echo 1)"
+    check ssaid_key "$(ssaid_ok && echo 1)"
     stop_emu
     return $ok
 }
@@ -660,20 +773,7 @@ cmd_e2e() {
     start_emu
     serve_agent
     reset_device
-    log "scan with the test scanner app"
-    $A shell pm grant $SCANNER android.permission.CAMERA
-    $A shell am force-stop $SCANNER
-    $A logcat -c
-    $A shell am start -n $SCANNER/.ScanActivity >/dev/null
-    for _ in $(seq 1 30); do
-        sleep 2
-        $A logcat -d -s QRSCAN | grep -q RESULT && break
-    done
-    $A logcat -d -s QRSCAN | grep -q RESULT || fail "scanner did not decode the QR in 60 s"
-    $A shell "cat /data/data/$SCANNER/files/qr.txt > /data/local/tmp/qr.json"
-    $A exec-out cat /data/local/tmp/qr.json > "$OUT/decoded.json"
-    $A shell am force-stop $SCANNER
-    log "decoded $(wc -c < "$OUT/decoded.json") bytes"
+    scan_qr
     check_decoded
     read_dpc "$OUT/decoded.json"
     log "provision, expecting Device Owner $DPC"
@@ -681,9 +781,10 @@ cmd_e2e() {
     $A shell 'CLASSPATH=/data/local/tmp/prov.dex app_process / Prov /data/local/tmp/qr.json' | grep -q 'result=0' || fail "provisioning intent refused"
     sleep 10
     tap_through 10 || fail "$DPC is not Device Owner"
+    if [ "${FINALIZE:-1}" = 1 ]; then finalize_provisioning || fail "DPC setup did not finish"; fi
     report
     log "PASS: $DPC is Device Owner"
-    stop_emu
+    keep_or_stop
 }
 
 cmd_e2e_sw() {
@@ -724,13 +825,15 @@ case "$CMD" in
     bake-builtin) cmd_bake && cmd_bake_sw ;;
     e2e) cmd_e2e ;;
     e2e-sw) cmd_e2e_sw ;;
+    scan) cmd_scan ;;
     ids) cmd_ids ;;
     start)
         start_emu
-        wait_imei
         serve_agent
+        # reset applies the guest IMEI and build props, restarts, and waits for the IMEI
+        reset_device
         log "running and ready (/tmp/device-ready); docker exec -it <container> adb shell"
         tail -f /tmp/emulator.log
         ;;
-    *) echo "usage: emu.sh bake|bake-sw|bake-builtin|e2e|e2e-sw|start|ids"; exit 2 ;;
+    *) echo "usage: emu.sh bake|bake-sw|bake-builtin|e2e|e2e-sw|scan|start|ids"; exit 2 ;;
 esac

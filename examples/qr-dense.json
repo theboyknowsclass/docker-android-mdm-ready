@@ -1,0 +1,12 @@
+{
+  "android.app.extra.PROVISIONING_DEVICE_ADMIN_COMPONENT_NAME": "com.example.dpc/.receiver.AdminReceiver",
+  "android.app.extra.PROVISIONING_DEVICE_ADMIN_PACKAGE_DOWNLOAD_LOCATION": "http://dpc.example.test:8080/configapi/mdm/apk/download/370025",
+  "android.app.extra.PROVISIONING_DEVICE_ADMIN_PACKAGE_CHECKSUM": "AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8",
+  "android.app.extra.PROVISIONING_SKIP_ENCRYPTION": true,
+  "android.app.extra.PROVISIONING_LEAVE_ALL_SYSTEM_APPS_ENABLED": true,
+  "android.app.extra.PROVISIONING_ADMIN_EXTRAS_BUNDLE": {
+    "enrolment_url": "https://enrol.example.test:5000/registration/mdm/v2/devices",
+    "enrolment_token": "0123456789abcdef0123456789abcdef0123456789abcdef",
+    "tenant": "example-tenant-0001"
+  }
+}

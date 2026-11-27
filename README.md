@@ -14,7 +14,8 @@ Built on [budtmo/docker-android](https://github.com/budtmo/docker-android) (`emu
 4. A root helper (`Prov`) sends the provisioning intent the Setup Wizard would send, including the admin extras bundle.
 5. A script taps through the consent screens.
 6. Android's ManagedProvisioning downloads the DPC, checks its checksum and installs it.
-7. The run passes (exit code 0) when the DPC named in the QR is Device Owner.
+7. The run checks that the DPC named in the QR is Device Owner.
+8. Once ManagedProvisioning has left the foreground it sends `PROVISION_FINALIZATION` (the Setup Wizard's job), taps through the DPC's own screens (granting "modify system settings" if the DPC asks) until the DPC leaves the foreground, then passes (exit code 0).
 
 No Google proprietary APKs are included.
 
@@ -40,15 +41,16 @@ docker run --rm --device /dev/kvm --cap-add NET_ADMIN --sysctl net.ipv6.conf.all
 - The same tags are on Docker Hub as `docker.io/theboyknowsclass/docker-android-mdm-ready`.
 
 - Evidence is written to `work/out/`: `decoded.json`, `logcat.txt`, `screen-N.png`, and `fail.png` on failure.
-- [examples/qr.json](examples/qr.json) shows the payload shape.
+- [examples/qr.json](examples/qr.json) shows the payload shape. [examples/qr-dense.png](examples/qr-dense.png) is a dense version 23 QR (109 modules, like real enrolment QRs) that CI scans on every build.
 
 ### Commands
 
 | Command | What it does |
 |---|---|
-| `e2e` (default) | scan, provision, assert Device Owner |
-| `start` | boot with the QR on the camera and keep running; use `docker exec -it <c> adb shell` |
+| `e2e` (default) | scan, provision, assert Device Owner, finalize provisioning |
+| `start` | boot with the QR on the camera, reset to un-set-up, apply the identity, wait for the IMEI (`/tmp/device-ready`) and keep running; use `docker exec -it <c> adb shell` |
 | `ids` | boot, apply the device identity and print what Android reports |
+| `scan` | boot and decode `qr.png` with the test scanner only (compares with `qr.json`); `work/out/camera-frame.png` is what the camera saw |
 | `bake` | one-off image preparation, used by the build |
 
 ### Options (`-e NAME=value`)
@@ -59,6 +61,12 @@ docker run --rm --device /dev/kvm --cap-add NET_ADMIN --sysctl net.ipv6.conf.all
 | `CAM_SIZE` | `800` | QR size on the camera canvas |
 | `CAM_CANVAS` | `2000` | camera canvas size |
 | `CAM_XOFF` | `-447` | x offset (the emulator's image camera is rotated and off centre) |
+| `CAM_CANVAS_W` / `CAM_CANVAS_H` | `CAM_CANVAS` | camera canvas width / height separately |
+| `FRAME_LOG` | `0` | `1` = also print the camera frame base64-encoded in the log (CI) |
+| `FINALIZE` | `1` | `0` = stop at Device Owner (no `PROVISION_FINALIZATION`, no DPC screens) |
+| `DPC_ROUNDS` | `20` | most screens `e2e` handles while finalizing (`work/out/final-<n>.png`); the run fails if the DPC is still in front after them |
+| `DPC_BUTTONS` | `NEXT`, `CONTINUE`, `Grant Permission`, `Allow`, `CONFIRM & <WORD>`, `ENROL`/`ENROLL`, `FINISH` (and other cases) | extra button labels tapped on the DPC's screens, as an extended regex |
+| `KEEP_RUNNING` | `0` | `1` = after `e2e` passes, keep the enrolled device running (`/tmp/device-ready`) instead of stopping |
 
 ### Device identity
 
