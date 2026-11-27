@@ -259,8 +259,8 @@ patch_guest_imei() {
         done | sort -u > "$MT/vendor-orig/.list"
         log "guest files to patch for the IMEI: $(tr '\n' ' ' < "$MT/vendor-orig/.list")"
     fi
-    while read -r lib; do
-        [ -n "$lib" ] || continue
+    # a for loop, not "while read": adb shell would swallow the rest of the list from stdin
+    for lib in $(cat "$MT/vendor-orig/.list"); do
         name=$(echo "$lib" | tr '/' '_')
         if [ ! -f "$MT/vendor-orig/$name" ]; then
             $A pull "$lib" "$MT/vendor-orig/$name" >/dev/null 2>&1 \
@@ -287,7 +287,7 @@ PY2
             && $A shell "chmod 644 $lib; case $lib in */bin/*) chmod 755 $lib ;; esac; chown root:root $lib; restorecon $lib" \
             || { log "cannot push the patched guest $lib"; exit 2; }
         log "IMEI patched in guest $lib: $out"
-    done < "$MT/vendor-orig/.list"
+    done
     # No guest file holds a known default IMEI (later images can ask the modem instead). Not fatal
     # here: wait_imei and the ids check still fail the run if Android reports another IMEI.
     [ "$hits" -gt 0 ] || log "no default IMEI in the guest RIL files; relying on the modem's IMEI (checked after boot)"
