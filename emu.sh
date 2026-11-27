@@ -124,12 +124,46 @@ pick_ids() {
 # or a Docker network created with --ipv6.
 ipv6_for_modem() {
     has_v6() { grep -vqE '^(0{31}1|fe80) ' /proc/net/if_inet6 2>/dev/null && grep -vE '^(0{31}1|fe80)' /proc/net/if_inet6 | grep -q .; }
+    V6_OK=1
     has_v6 && return 0
     { echo 0 > /proc/sys/net/ipv6/conf/all/disable_ipv6; } 2>/dev/null
     { echo 0 > /proc/sys/net/ipv6/conf/lo/disable_ipv6; } 2>/dev/null
     ip -6 addr add fd6d:646d:7264::1/128 dev lo 2>/dev/null
     has_v6 && { log "IPv6 address added for the emulator modem"; return 0; }
-    log "WARNING: no usable IPv6, so no SIM, IMEI or phone number. Run with --cap-add NET_ADMIN --sysctl net.ipv6.conf.all.disable_ipv6=0"
+    V6_OK=0
+    case "$CMD" in bake*) return 0 ;; esac   # the bake needs no modem
+    if [ "${ALLOW_NO_MODEM:-0}" = 1 ]; then
+        log "WARNING: no usable IPv6, so no SIM, IMEI or phone number (ALLOW_NO_MODEM=1)"
+        return 0
+    fi
+    log "no usable IPv6: the emulator modem cannot connect to [::1], so there would be no SIM, IMEI or phone"
+    log "number and a DPC would see a different device id. Run with --cap-add NET_ADMIN --sysctl net.ipv6.conf.all.disable_ipv6=0"
+    log "(or set ALLOW_NO_MODEM=1 to boot without them)"
+    exit 2
+}
+
+# A DPC that reads the IMEI before the modem has reported it falls back to another id (e.g. "S" +
+# serial) and may keep it for the life of its process. Wait until Android returns DEVICE_IMEI, then
+# write /tmp/device-ready, so tests can wait on it (docker exec <c> test -f /tmp/device-ready).
+wait_imei() {
+    local i imei
+    rm -f /tmp/device-ready
+    if [ "${V6_OK:-0}" != 1 ]; then
+        log "no modem, not waiting for the IMEI"
+        touch /tmp/device-ready
+        return 0
+    fi
+    for ((i = 0; i < 60; i++)); do
+        imei=$($A shell service call iphonesubinfo 1 s16 root 2>/dev/null | grep -oE "'[^']*'" | tr -d "'.[:space:]")
+        if [ "$imei" = "$DEVICE_IMEI" ]; then
+            log "IMEI reported: $imei"
+            touch /tmp/device-ready
+            return 0
+        fi
+        sleep 2
+    done
+    log "Android did not report IMEI $DEVICE_IMEI within 120 s (last answer: '${imei:-none}')"
+    exit 3
 }
 
 # The modem simulator has the IMEI built in, so swap it (same length) in the emulator files.
@@ -337,7 +371,8 @@ start_emu() {
         java -Djava.awt.headless=true -cp "$MT" Pad "$WORK/qr.png" /tmp/qrpad.png "$CAM_SIZE" "$CAM_CANVAS" "$CAM_CANVAS" "$CAM_XOFF" || exit 2
         cam=imagefile:/tmp/qrpad.png
     fi
-    [ -n "${DEVICE_SERIAL:-}" ] || pick_ids
+    # once per container start (restarts keep the identity); fills in whatever was not set
+    [ "${IDS_PICKED:-0}" = 1 ] || { pick_ids; IDS_PICKED=1; }
     ipv6_for_modem
     patch_imei
     patch_sim
@@ -413,6 +448,7 @@ reset_device() {
         $A shell am start -W -n "$SETUPWIZARD/.SetupWizardActivity" >/dev/null 2>&1
         sleep 5
     fi
+    case "$CMD" in bake*) ;; *) wait_imei ;; esac
     local p
     p=$($A shell settings get global device_provisioned | tr -d '\r')
     log "device_provisioned=$p"
@@ -681,7 +717,8 @@ cmd_e2e_sw() {
     stop_emu
 }
 
-case "${1:-e2e}" in
+CMD=${1:-e2e}
+case "$CMD" in
     bake) cmd_bake ;;
     bake-sw) cmd_bake_sw ;;
     bake-builtin) cmd_bake && cmd_bake_sw ;;
@@ -690,8 +727,9 @@ case "${1:-e2e}" in
     ids) cmd_ids ;;
     start)
         start_emu
+        wait_imei
         serve_agent
-        log "running; docker exec -it <container> adb shell"
+        log "running and ready (/tmp/device-ready); docker exec -it <container> adb shell"
         tail -f /tmp/emulator.log
         ;;
     *) echo "usage: emu.sh bake|bake-sw|bake-builtin|e2e|e2e-sw|start|ids"; exit 2 ;;

@@ -33,6 +33,9 @@ cp my-dpc.apk work/agent.apk        # optional: served at http://10.0.2.2:8099/a
 docker run --rm --device /dev/kvm --cap-add NET_ADMIN --sysctl net.ipv6.conf.all.disable_ipv6=0 -v "$PWD/work:/work" ghcr.io/theboyknowsclass/docker-android-mdm-ready:<sha> e2e
 ```
 
+> **Always pass `--cap-add NET_ADMIN --sysctl net.ipv6.conf.all.disable_ipv6=0`.** The emulator's modem connects over IPv6 localhost (`[::1]`), and Docker gives containers no IPv6 by default. Without the flags there is no modem: no SIM, no IMEI, no phone number, and a DPC reports a different device id. The container now refuses to boot without them (`ALLOW_NO_MODEM=1` overrides this).
+
+- **Readiness:** after boot (and after each reset) the container waits until Android reports the IMEI, then creates `/tmp/device-ready`. A DPC that reads the IMEI too early falls back to another id and can keep it, so wait on it before provisioning: `docker exec <c> test -f /tmp/device-ready`.
 - Pin a 7-character commit tag (`:<sha>`, e.g. `:8fe8a3d`) in scripts, compose files and CI. Every push to `main` moves `:latest`, so it is only for trying the image out.
 - The same tags are on Docker Hub as `docker.io/theboyknowsclass/docker-android-mdm-ready`.
 
