@@ -1,6 +1,6 @@
 # docker-android-mdm-ready
 
-An Android 14 emulator in Docker that is ready for QR (Device Owner) enrolment tests.
+An Android 14, 15 or 16 emulator in Docker that is ready for QR (Device Owner) enrolment tests.
 
 You give it a provisioning QR image. It scans the QR, provisions the device and checks that your DPC ends up as Device Owner.
 
@@ -42,9 +42,10 @@ docker run --rm --device /dev/kvm --cap-add NET_ADMIN --sysctl net.ipv6.conf.all
   | Tag | Moves? | Example |
   |---|---|---|
   | `:android-<version>-<sha>` | no, pin this in scripts, compose files and CI | `:android-14-b4ea83f` |
-  | `:<sha>` | no | `:b4ea83f` |
+  | `:<sha>` | no, Android 14 | `:b4ea83f` |
   | `:android-<version>` | yes, newest build of that Android version | `:android-14` |
-  | `:latest` | yes, newest build | |
+  | `:latest` | yes, newest Android 14 build | |
+- Versions: `android-14`, `android-15`, `android-16`, all built from the same commit.
 - The same tags are on Docker Hub as `docker.io/theboyknowsclass/docker-android-mdm-ready`.
 
 - Evidence is written to `work/out/`: `decoded.json`, `logcat.txt`, `screen-N.png`, and `fail.png` on failure.
@@ -110,15 +111,16 @@ Run one container per device, each with its own `work` folder (and its own `-p` 
 ## Build it yourself
 
 ```sh
-docker build -t mdm-emu:base .
+docker build -t mdm-emu:base .   # Android 14
+# Android 15: --build-arg API=35 --build-arg UPDATE_EMULATOR=1; Android 16: API=36
 docker run --device /dev/kvm --name bake mdm-emu:base bake
 docker commit --change 'CMD ["e2e"]' bake mdm-emu:ready
 docker rm bake
 ```
 
-The GitHub Actions workflow does the same thing on every push to `main` and pushes the image to GHCR (and Docker Hub). Pull requests run the same build, bake and identity check but push nothing.
+The GitHub Actions workflow does the same thing on every push to `main` and pushes the image to GHCR (and Docker Hub). Each Android version is its own job in the build matrix. Pull requests run the same build, bake and identity check but push nothing.
 
-The base image is pinned by digest in the `Dockerfile`, because `emu.sh` patches emulator binaries that change between base image versions. To move to a newer base, update the digest and let the identity check in CI prove it.
+The base image is pinned by digest in the `Dockerfile`, because `emu.sh` patches emulator binaries that change between base image versions. To move to a newer base, update the digest and let the identity check in CI prove it. Android 15 and 16 use the same base and install their system image and a newer emulator with `sdkmanager` during the build.
 
 ## Licences
 

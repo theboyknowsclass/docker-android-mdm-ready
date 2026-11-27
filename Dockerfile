@@ -1,6 +1,6 @@
 # Ready-to-test Android emulator for QR (Device Owner) enrolment tests.
 #
-# Contents: Android 14 google_apis x86_64 AVD "mdmtest", the test QR scanner app, the provisioning
+# Contents: Android 14/15/16 (build arg API) google_apis x86_64 AVD "mdmtest", the test QR scanner app, the provisioning
 # helper (Prov) and emu.sh, which boots the emulator with /work/qr.png as the back camera picture.
 #
 # The image build needs no KVM. Rooting the system image and disabling GoogleSdkSetup has to run
@@ -18,10 +18,16 @@ ENV ANDROID_AVD_HOME=/opt/avd \
     WORK=/work \
     MT=/opt/mdmtest
 
-ARG SYSIMG="system-images;android-34;google_apis;x86_64"
+# API level of the Android system image: 34 = Android 14, 35 = 15, 36 = 16. The base image only ships
+# Android 14, so 35 and 36 install their system image with sdkmanager and need UPDATE_EMULATOR=1.
+ARG API=34
+ARG SYSIMG="system-images;android-${API};google_apis;x86_64"
 ARG DEVICE=pixel_6
 # 1 = update the emulator binary first (newer Android images can need a newer emulator than the base has)
 ARG UPDATE_EMULATOR=0
+
+ENV ANDROID_API=${API} \
+    SYSIMG_DIR=/opt/android/system-images/android-${API}/google_apis/x86_64
 
 COPY src/ /opt/mdmtest/src/
 COPY emu.sh /opt/mdmtest/emu.sh

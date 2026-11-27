@@ -12,8 +12,17 @@ permissions:
 
 jobs:
   image:
+    name: image (Android ${{ matrix.android }})
     runs-on: ubuntu-latest
-    timeout-minutes: 90
+    timeout-minutes: 120
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # api = system image API level; android 14 also gets :latest and :<sha>
+          - { android: "14", api: "34", update_emulator: "0" }
+          - { android: "15", api: "35", update_emulator: "1" }
+          - { android: "16", api: "36", update_emulator: "1" }
     steps:
       - uses: actions/checkout@v5
 
@@ -30,7 +39,7 @@ jobs:
           ls -l /dev/kvm
 
       - name: Build base image
-        run: docker build -t mdm-emu:base .
+        run: docker build --build-arg API=${{ matrix.api }} --build-arg UPDATE_EMULATOR=${{ matrix.update_emulator }} -t mdm-emu:base .
 
       - name: Bake (boots the emulator once, roots it, installs the scanner)
         run: docker run --device /dev/kvm --name bake mdm-emu:base bake
@@ -78,26 +87,24 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: ids-out
+          name: ids-out-android-${{ matrix.android }}
           path: ids-out
           if-no-files-found: ignore
 
-      - name: Android version tag (from the Dockerfile's system image)
+      - name: Tags for this Android version
         run: |
-          API=$(sed -n 's/^ARG SYSIMG="system-images;android-\([0-9]*\);.*/\1/p' Dockerfile)
-          case "$API" in
-            30) V=11 ;; 31) V=12 ;; 32) V=12L ;; 33) V=13 ;; 34) V=14 ;; 35) V=15 ;; 36) V=16 ;;
-            *) echo "unknown API level '$API'"; exit 1 ;;
-          esac
-          echo "ANDROID_TAG=android-$V" >> "$GITHUB_ENV"
-          echo "API $API = Android $V"
+          T="android-${{ matrix.android }} android-${{ matrix.android }}-${GITHUB_SHA::7}"
+          # :latest and :<sha> stay Android 14, as before the version tags existed
+          [ "${{ matrix.android }}" = 14 ] && T="latest ${GITHUB_SHA::7} $T"
+          echo "TAGS=$T" >> "$GITHUB_ENV"
+          echo "tags: $T"
 
       - name: Push to GHCR
         if: github.event_name != 'pull_request'
         run: |
           echo "${{ secrets.GITHUB_TOKEN }}" | docker login ghcr.io -u "${{ github.actor }}" --password-stdin
           IMG="ghcr.io/${GITHUB_REPOSITORY,,}"
-          for t in latest "${GITHUB_SHA::7}" "$ANDROID_TAG" "$ANDROID_TAG-${GITHUB_SHA::7}"; do
+          for t in $TAGS; do
             docker tag mdm-emu:ready "$IMG:$t"
             docker push "$IMG:$t"
           done
@@ -111,7 +118,7 @@ jobs:
           if [ -z "$DH_USER" ] || [ -z "$DH_TOKEN" ]; then echo "no Docker Hub secrets, skipped"; exit 0; fi
           echo "$DH_TOKEN" | docker login -u "$DH_USER" --password-stdin
           IMG="docker.io/$DH_USER/${GITHUB_REPOSITORY#*/}"
-          for t in latest "${GITHUB_SHA::7}" "$ANDROID_TAG" "$ANDROID_TAG-${GITHUB_SHA::7}"; do
+          for t in $TAGS; do
             docker tag mdm-emu:ready "$IMG:$t"
             docker push "$IMG:$t"
           done

@@ -241,41 +241,74 @@ set_wifi_mac() {
 
 # Android 14 asks the guest radio HAL for the IMEI (DEVICE_IMEI), and the emulator's RIL libraries
 # answer from a built-in value instead of asking the modem. Patch them on the (remounted) vendor
-# partition; originals are kept in the container under $MT/vendor-orig. Any failure is fatal: a
+# partition; originals are kept in the container under $MT/vendor-orig. Any patch failure is fatal: a
 # device that silently reports the default IMEI looks like every other device to the server.
 patch_guest_imei() {
-    local lib out hits=0
+    local lib libs name out hits=0
     $A remount >/dev/null 2>&1 || { log "remount failed; cannot patch the guest IMEI"; exit 2; }
     mkdir -p "$MT/vendor-orig"
-    for lib in libcuttlefish-ril-2.so libril-modem-lib.so; do
-        if [ ! -f "$MT/vendor-orig/$lib" ]; then
-            $A pull "/vendor/lib64/$lib" "$MT/vendor-orig/$lib" >/dev/null 2>&1 \
+    # Android 14 keeps the default IMEI in these two; later images may move it, so also look for
+    # any vendor library or HAL binary that holds one (only on the first run: the originals are kept).
+    libs="/vendor/lib64/libcuttlefish-ril-2.so /vendor/lib64/libril-modem-lib.so"
+    if [ ! -f "$MT/vendor-orig/.list" ]; then
+        libs="$libs $($A shell "grep -rl -e 867400022047199 -e 358240051111110 /vendor/lib64 /vendor/bin /odm/lib64 /odm/bin 2>/dev/null" | tr -d '\r')"
+        # files in an APEX are read-only images: log them, they cannot be patched in place
+        log "default IMEI in APEX files (not patched): $($A shell "grep -rl -e 867400022047199 -e 358240051111110 /apex/*/lib64 /apex/*/bin 2>/dev/null" | tr -d '\r' | tr '\n' ' ')"
+        for lib in $libs; do
+            $A shell "test -f $lib" >/dev/null 2>&1 && echo "$lib"
+        done | sort -u > "$MT/vendor-orig/.list"
+        log "guest files to patch for the IMEI: $(tr '\n' ' ' < "$MT/vendor-orig/.list")"
+    fi
+    # a for loop, not "while read": adb shell would swallow the rest of the list from stdin
+    for lib in $(cat "$MT/vendor-orig/.list"); do
+        name=$(echo "$lib" | tr '/' '_')
+        if [ ! -f "$MT/vendor-orig/$name" ]; then
+            $A pull "$lib" "$MT/vendor-orig/$name" >/dev/null 2>&1 \
                 || { log "cannot pull guest $lib for the IMEI patch"; exit 2; }
         fi
-        out=$(python3 - "$MT/vendor-orig/$lib" "/tmp/$lib" "$DEVICE_IMEI" <<'PY2'
+        out=$(python3 - "$MT/vendor-orig/$name" "/tmp/$name" "$DEVICE_IMEI" <<'PY2'
 import sys
 src, dst, imei = sys.argv[1:4]
 b = open(src, "rb").read()
 counts = []
 total = 0
+# Android 15's libril-modem-lib writes the first 7 digits as two overlapping 4-byte stores to the
+# stack, "8674" at d and "4000" at d+3 (mov dword [rsp+d], imm32 = c7 44 24 d imm32), next to the
+# "22047199" immediate. Only that exact instruction pair is patched.
+import re
+def split_prefix(m):
+    d1, d2 = m.group(1)[0], m.group(2)[0]
+    if d2 != d1 + 3:
+        return m.group(0)
+    return (b"\xc7\x44\x24" + bytes([d1]) + imei[0:4].encode()
+            + b"\xc7\x44\x24" + bytes([d2]) + imei[3:7].encode())
+b, split = re.subn(rb"\xc7\x44\x24(.)8674\xc7\x44\x24(.)4000", split_prefix, b, flags=re.S)
+counts.append("split-prefix=%d" % split)
+total += split
 for old, new in ((b"867400022047199", imei), (b"358240051111110", imei),
                  (b"86740002", imei[:8]), (b"22047199", imei[7:])):
     n = b.count(old)
     total += n
     counts.append("%s=%d" % (old.decode(), n))
     b = b.replace(old, new.encode())
+if split == 0 and b.count(imei[7:].encode()) and not b.count(imei[:7].encode()):
+    # the prefix is still somewhere else: show where "8674" appears, to extend this patch
+    src_b = open(src, "rb").read()
+    for k in [i for i in range(len(src_b)) if src_b.startswith(b"8674", i)][:8]:
+        sys.stderr.write("8674 @%x: %s\n" % (k, src_b[max(0, k - 24):k + 24].hex()))
 open(dst, "wb").write(b)
 print("total=%d %s" % (total, " ".join(counts)))
 PY2
 ) || { log "IMEI patch failed for guest $lib"; exit 2; }
-        case $out in total=0\ *) ;; *) hits=$((hits + 1)) ;; esac
-        $A push "/tmp/$lib" "/vendor/lib64/$lib" >/dev/null 2>&1 \
-            && $A shell "chmod 644 /vendor/lib64/$lib; chown root:root /vendor/lib64/$lib; restorecon /vendor/lib64/$lib" \
+        case $out in total=0\ *) continue ;; *) hits=$((hits + 1)) ;; esac
+        $A push "/tmp/$name" "$lib" >/dev/null 2>&1 \
+            && $A shell "chmod 644 $lib; case $lib in */bin/*) chmod 755 $lib ;; esac; chown root:root $lib; restorecon $lib" \
             || { log "cannot push the patched guest $lib"; exit 2; }
         log "IMEI patched in guest $lib: $out"
     done
-    # Neither library held a known default IMEI: the system image changed, so the patch did nothing.
-    [ "$hits" -gt 0 ] || { log "no default IMEI found in the guest RIL libraries (system image changed?)"; exit 2; }
+    # No guest file holds a known default IMEI (later images can ask the modem instead). Not fatal
+    # here: wait_imei and the ids check still fail the run if Android reports another IMEI.
+    [ "$hits" -gt 0 ] || log "no default IMEI in the guest RIL files; relying on the modem's IMEI (checked after boot)"
 }
 
 # Build.DISPLAY, MODEL, MANUFACTURER, BRAND: make the device look like a real phone. The stock
@@ -714,7 +747,8 @@ PY
 }
 
 # Boot, reset with the chosen identity and check what Android and the modem report.
-# Telephony is asked as root: "service call iphonesubinfo" 1 = IMEI, 8 = IMSI (Android 14).
+# Telephony is asked as root: "service call iphonesubinfo" 1 = IMEI, 8 = IMSI (Android 14; other
+# transaction numbers are tried for the IMSI if 8 does not answer).
 cmd_ids() {
     mkdir -p "$OUT"
     start_emu
@@ -730,6 +764,13 @@ cmd_ids() {
     sim=$($A shell content query --uri content://telephony/siminfo --projection icc_id:number 2>/dev/null | tr -d '\r')
     imei=$(sub 1)
     imsi=$(sub 8)
+    # The transaction number is Android 14's; if another version moved getSubscriberId, find it.
+    if [ "$imsi" != "$DEVICE_IMSI" ]; then
+        local c
+        for c in $(seq 2 30); do
+            [ "$(sub "$c")" = "$DEVICE_IMSI" ] && { imsi=$DEVICE_IMSI; log "IMSI answered by iphonesubinfo $c"; break; }
+        done
+    fi
     at_imei=$(python3 - "$MODEM_PORT" <<'PY2' 2>&1
 import socket, sys, time
 s = socket.create_connection(("::1", int(sys.argv[1])), timeout=5)
