@@ -733,7 +733,8 @@ PY
 }
 
 # Boot, reset with the chosen identity and check what Android and the modem report.
-# Telephony is asked as root: "service call iphonesubinfo" 1 = IMEI, 8 = IMSI (Android 14).
+# Telephony is asked as root: "service call iphonesubinfo" 1 = IMEI, 8 = IMSI (Android 14; other
+# transaction numbers are tried for the IMSI if 8 does not answer).
 cmd_ids() {
     mkdir -p "$OUT"
     start_emu
@@ -749,6 +750,13 @@ cmd_ids() {
     sim=$($A shell content query --uri content://telephony/siminfo --projection icc_id:number 2>/dev/null | tr -d '\r')
     imei=$(sub 1)
     imsi=$(sub 8)
+    # The transaction number is Android 14's; if another version moved getSubscriberId, find it.
+    if [ "$imsi" != "$DEVICE_IMSI" ]; then
+        local c
+        for c in $(seq 2 30); do
+            [ "$(sub "$c")" = "$DEVICE_IMSI" ] && { imsi=$DEVICE_IMSI; log "IMSI answered by iphonesubinfo $c"; break; }
+        done
+    fi
     at_imei=$(python3 - "$MODEM_PORT" <<'PY2' 2>&1
 import socket, sys, time
 s = socket.create_connection(("::1", int(sys.argv[1])), timeout=5)
