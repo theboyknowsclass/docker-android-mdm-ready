@@ -23,7 +23,7 @@
 #   DEVICE_ICCID       SIM serial, 19-20 digits; random ones are 89 + digits + Luhn check digit
 #   DEVICE_WIFI_MAC    wlan0 MAC, aa:bb:cc:dd:ee:ff; random ones are locally administered unicast
 #   DEVICE_BUILD_DISPLAY  Build.DISPLAY (ro.build.display.id), 1-40 chars: letters, digits, space . _ -
-#                      default "sdk_gphone64 <ro.build.id>"; the stock value is 63 chars, which server
+#                      default <ro.build.id> (as on user builds); the stock value is 63 chars, which server
 #                      schemas that cap it at 40 reject
 #
 # VIEW=1 (any command): show the emulator window live in a browser through noVNC on port 6080
@@ -233,7 +233,7 @@ PY2
 set_build_display() {
     local want=${DEVICE_BUILD_DISPLAY:-}
     if [ -z "$want" ]; then
-        want="sdk_gphone64 $($A shell getprop ro.build.id | tr -d '\r')"
+        want=$($A shell getprop ro.build.id | tr -d '\r')
     fi
     [ ${#want} -le 40 ] || { log "build display id '$want' is longer than 40 characters"; exit 2; }
     DEVICE_BUILD_DISPLAY=$want
