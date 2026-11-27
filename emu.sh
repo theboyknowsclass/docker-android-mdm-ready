@@ -272,12 +272,29 @@ src, dst, imei = sys.argv[1:4]
 b = open(src, "rb").read()
 counts = []
 total = 0
+prefix_whole = b.count(b"86740002")
+# Android 15's libril-modem-lib builds the first 7 digits from two overlapping 4-byte immediates
+# ("8674" at 0, "4000" at 3) next to the "22047199" one. Those 4-byte values are only patched
+# within 64 bytes of a "22047199", never across the whole file.
+near = 0
+if prefix_whole == 0:
+    b = bytearray(b)
+    for pos in [i for i in range(len(b)) if b.startswith(b"22047199", i)]:
+        lo, hi = max(0, pos - 64), pos + 72
+        sys.stderr.write("context @%x: %s\n" % (pos, bytes(b[lo:hi]).hex()))
+        for old, new in ((b"8674", imei[0:4]), (b"4000", imei[3:7])):
+            i = bytes(b[lo:hi]).find(old)
+            if i >= 0:
+                b[lo + i:lo + i + 4] = new.encode()
+                near += 1
+    b = bytes(b)
 for old, new in ((b"867400022047199", imei), (b"358240051111110", imei),
                  (b"86740002", imei[:8]), (b"22047199", imei[7:])):
     n = b.count(old)
     total += n
     counts.append("%s=%d" % (old.decode(), n))
     b = b.replace(old, new.encode())
+counts.append("near-prefix=%d" % near)
 open(dst, "wb").write(b)
 print("total=%d %s" % (total, " ".join(counts)))
 PY2
