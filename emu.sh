@@ -516,6 +516,13 @@ finalize_provisioning() {
     local pkg=${DPC%%/*} r ui b top idle=0
     # The DPC may send the user to Settings for "modify system settings": grant it up front.
     $A shell appops set "$pkg" WRITE_SETTINGS allow 2>/dev/null
+    # Sent while ManagedProvisioning still shows its screens, the intent is ignored: wait until it
+    # has left the foreground (up to 2 min).
+    for r in $(seq 1 60); do
+        $A shell dumpsys activity activities 2>/dev/null | grep -E 'mResumedActivity|topResumedActivity' | head -1 \
+            | grep -q com.android.managedprovisioning || break
+        sleep 2
+    done
     log "send PROVISION_FINALIZATION"
     $A shell am start -a android.app.action.PROVISION_FINALIZATION 2>&1 | tail -2
     sleep 5
