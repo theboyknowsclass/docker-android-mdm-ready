@@ -63,7 +63,7 @@ Each container start gets a new random identity, so every run enrols as a new de
 
 | Name | Format | Random default |
 |---|---|---|
-| `DEVICE_SERIAL` | 1-20 letters/digits (`Build.getSerial()`, `ro.serialno`) | `MDMR` + 12 hex |
+| `DEVICE_SERIAL` | 1-16 letters/digits (`Build.getSerial()`, `ro.serialno`), so `S` + serial fits a 17-character device id (`T?[a-zA-Z0-9]{0,17}`) | `MDMR` + 12 hex (16 characters) |
 | `DEVICE_IMEI` | 15 digits | `35` + 12 random + Luhn check digit |
 | `DEVICE_SSAID_KEY` | 64 hex | random |
 | `DEVICE_PHONE` | SIM phone number, 3-11 digits, optional `+` (the emulator ignores longer ones) | `1555` + 7 digits |

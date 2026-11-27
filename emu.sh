@@ -14,7 +14,7 @@
 #   ids       boot, apply the device identity below and print what Android reports. Exit 0 = all took.
 #
 # Device identity (any command that boots): random per container start unless set.
-#   DEVICE_SERIAL      serial number (Build.getSerial / ro.serialno), letters and digits
+#   DEVICE_SERIAL      serial number (Build.getSerial / ro.serialno), 1-16 letters and digits
 #   DEVICE_IMEI        15 digits; random ones get a valid Luhn check digit
 #   DEVICE_SSAID_KEY   64 hex chars: the seed Android derives every app's ANDROID_ID from
 #                      (same key + same app = same ANDROID_ID)
@@ -86,7 +86,9 @@ pick_ids() {
     if [ -z "${DEVICE_WIFI_MAC:-}" ]; then
         DEVICE_WIFI_MAC=02:$(rand_hex 5 | sed 's/../&:/g; s/:$//')
     fi
-    [[ $DEVICE_SERIAL =~ ^[A-Za-z0-9]{1,20}$ ]] || { log "DEVICE_SERIAL must be 1-20 letters/digits"; exit 2; }
+    # 16 max: a DPC without an IMEI can report "S" + serial as its device id, and server schemas
+    # can allow only 17 letters/digits there (T?[a-zA-Z0-9]{0,17}).
+    [[ $DEVICE_SERIAL =~ ^[A-Za-z0-9]{1,16}$ ]] || { log "DEVICE_SERIAL must be 1-16 letters/digits"; exit 2; }
     [[ $DEVICE_IMEI =~ ^[0-9]{15}$ ]] || { log "DEVICE_IMEI must be 15 digits"; exit 2; }
     [[ $DEVICE_SSAID_KEY =~ ^[0-9A-Fa-f]{64}$ ]] || { log "DEVICE_SSAID_KEY must be 64 hex chars"; exit 2; }
     [[ $DEVICE_PHONE =~ ^\+?[0-9]{3,11}$ ]] || { log "DEVICE_PHONE must be 3-11 digits, optional + (the emulator ignores longer numbers)"; exit 2; }
