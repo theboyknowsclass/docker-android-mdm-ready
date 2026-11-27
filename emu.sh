@@ -312,6 +312,12 @@ EOF
     $A shell 'chown system:system /data/system/users/0/settings_ssaid.xml; chmod 600 /data/system/users/0/settings_ssaid.xml; restorecon /data/system/users/0/settings_ssaid.xml'
 }
 
+# Is DEVICE_SSAID_KEY the user key Android uses? system_server rewrites the file in binary XML (ABX).
+ssaid_ok() {
+    $A shell "f=/data/system/users/0/settings_ssaid.xml; abx2xml \$f - 2>/dev/null || cat \$f" 2>/dev/null \
+        | grep -i 'name="userkey"' | grep -qi "$DEVICE_SSAID_KEY"
+}
+
 log() { echo "[$(date +%H:%M:%S)] $*"; }
 
 fail() {
@@ -439,6 +445,13 @@ reset_device() {
     patch_guest_imei
     set_build_props
     restart_emu
+    # system_server can write its in-memory key back while the emulator is killed; one more go
+    if ! ssaid_ok; then
+        log "SSAID key did not take, writing it again"
+        write_ssaid
+        restart_emu
+        ssaid_ok || log "WARNING: SSAID key still not applied"
+    fi
     if [ -n "$DPC" ]; then
         $A shell pm uninstall "${DPC%%/*}" >/dev/null 2>&1
     fi
@@ -693,7 +706,7 @@ PY2
     check imsi "$([ "$imsi" = "$DEVICE_IMSI" ] && echo 1)"
     check iccid "$(grep -q "icc_id=$DEVICE_ICCID" <<<"$sim" && echo 1)"
     check phone "$(grep -q "number=+\?${DEVICE_PHONE#+}" <<<"$sim" && echo 1)"
-    check ssaid_key "$($A shell grep -c "$DEVICE_SSAID_KEY" /data/system/users/0/settings_ssaid.xml 2>/dev/null | tr -d '\r' | grep -q '^[1-9]' && echo 1)"
+    check ssaid_key "$(ssaid_ok && echo 1)"
     stop_emu
     return $ok
 }
