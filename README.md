@@ -14,7 +14,8 @@ Built on [budtmo/docker-android](https://github.com/budtmo/docker-android) (`emu
 4. A root helper (`Prov`) sends the provisioning intent the Setup Wizard would send, including the admin extras bundle.
 5. A script taps through the consent screens.
 6. Android's ManagedProvisioning downloads the DPC, checks its checksum and installs it.
-7. The run passes (exit code 0) when the DPC named in the QR is Device Owner.
+7. The run checks that the DPC named in the QR is Device Owner.
+8. It sends `PROVISION_FINALIZATION` (the Setup Wizard's job) and taps through the DPC's own screens until the DPC finishes, then passes (exit code 0).
 
 No Google proprietary APKs are included.
 
@@ -46,7 +47,7 @@ docker run --rm --device /dev/kvm --cap-add NET_ADMIN --sysctl net.ipv6.conf.all
 
 | Command | What it does |
 |---|---|
-| `e2e` (default) | scan, provision, assert Device Owner |
+| `e2e` (default) | scan, provision, assert Device Owner, finalize provisioning |
 | `start` | boot with the QR on the camera, reset to un-set-up, apply the identity, wait for the IMEI (`/tmp/device-ready`) and keep running; use `docker exec -it <c> adb shell` |
 | `ids` | boot, apply the device identity and print what Android reports |
 | `scan` | boot and decode `qr.png` with the test scanner only (compares with `qr.json`); `work/out/camera-frame.png` is what the camera saw |
@@ -62,6 +63,8 @@ docker run --rm --device /dev/kvm --cap-add NET_ADMIN --sysctl net.ipv6.conf.all
 | `CAM_XOFF` | `-447` | x offset (the emulator's image camera is rotated and off centre) |
 | `CAM_CANVAS_W` / `CAM_CANVAS_H` | `CAM_CANVAS` | camera canvas width / height separately |
 | `FRAME_LOG` | `0` | `1` = also print the camera frame base64-encoded in the log (CI) |
+| `DPC_ROUNDS` | `8` | most DPC screens `e2e` taps through after finalization (`work/out/dpc-<n>.png`) |
+| `KEEP_RUNNING` | `0` | `1` = after `e2e` passes, keep the enrolled device running (`/tmp/device-ready`) instead of stopping |
 
 ### Device identity
 

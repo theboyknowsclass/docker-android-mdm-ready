@@ -497,6 +497,48 @@ owner_ok() {
 }
 
 # Up to $1 rounds: stop once $DPC is Device Owner, otherwise tap the first button matching $BUTTONS.
+# Without the Setup Wizard nothing sends PROVISION_FINALIZATION after provisioning, so the DPC never
+# gets ADMIN_POLICY_COMPLIANCE (where DPCs usually register). Send it, then tap through the DPC's
+# own screens until it is no longer in front (or DPC_ROUNDS rounds pass).
+finalize_provisioning() {
+    local pkg=${DPC%%/*} r ui b idle=0
+    log "send PROVISION_FINALIZATION"
+    $A shell am start -a android.app.action.PROVISION_FINALIZATION 2>&1 | tail -2
+    sleep 5
+    for r in $(seq 1 "${DPC_ROUNDS:-8}"); do
+        if ! $A shell dumpsys activity activities 2>/dev/null | grep -E 'mResumedActivity|topResumedActivity' | grep -q "$pkg"; then
+            idle=$((idle + 1))
+            [ "$idle" -ge 2 ] && { log "DPC is no longer in front: finished"; return 0; }
+            sleep 5
+            continue
+        fi
+        idle=0
+        $A shell uiautomator dump /sdcard/ui.xml >/dev/null 2>&1
+        ui=$($A exec-out cat /sdcard/ui.xml 2>/dev/null)
+        log "DPC screen $r: $(grep -oE 'text="[^"]+"' <<<"$ui" | tr '\n' ' ' | cut -c1-200)"
+        $A exec-out screencap -p > "$OUT/dpc-$r.png" 2>/dev/null
+        b=$(grep -oE "text=\"($BUTTONS)\"[^>]*bounds=\"\[[0-9]+,[0-9]+\]\[[0-9]+,[0-9]+\]\"" <<<"$ui" | head -1 | grep -oE '\[[0-9]+,[0-9]+\]\[[0-9]+,[0-9]+\]')
+        if [ -n "$b" ]; then
+            set -- $(grep -oE '[0-9]+' <<<"$b")
+            $A shell input tap $(( ($1 + $3) / 2 )) $(( ($2 + $4) / 2 ))
+            log "tapped $b"
+        fi
+        sleep 8
+    done
+    log "DPC still in front after ${DPC_ROUNDS:-8} rounds (continuing)"
+}
+
+# KEEP_RUNNING=1: leave the emulator up after a passing e2e (the DPC can register and receive
+# commands); the container then runs until it is stopped.
+keep_or_stop() {
+    if [ "${KEEP_RUNNING:-0}" = 1 ]; then
+        touch /tmp/device-ready
+        log "KEEP_RUNNING=1: emulator stays up; docker exec -it <container> adb shell"
+        tail -f /tmp/emulator.log
+    fi
+    stop_emu
+}
+
 tap_through() {
     local rounds=$1 r ui b
     for r in $(seq 1 "$rounds"); do
@@ -726,9 +768,10 @@ cmd_e2e() {
     $A shell 'CLASSPATH=/data/local/tmp/prov.dex app_process / Prov /data/local/tmp/qr.json' | grep -q 'result=0' || fail "provisioning intent refused"
     sleep 10
     tap_through 10 || fail "$DPC is not Device Owner"
+    finalize_provisioning
     report
     log "PASS: $DPC is Device Owner"
-    stop_emu
+    keep_or_stop
 }
 
 cmd_e2e_sw() {
