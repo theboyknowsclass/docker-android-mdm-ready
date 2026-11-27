@@ -10,7 +10,9 @@
 #             assert the DPC from the QR is Device Owner. Exit 0 = pass.
 #   e2e-sw    reset, 6 taps on the Setup Wizard welcome screen, its own QR reader scans /work/qr.png,
 #             assert Device Owner. Exit 0 = pass.
-#   start     boot the emulator with /work/qr.png on the camera and keep running (docker exec ... adb shell).
+#   scan      boot, decode /work/qr.png with the test scanner, compare with /work/qr.json. Exit 0 = pass.
+#   start     boot the emulator with /work/qr.png on the camera, reset to un-set-up, wait until the
+#             device is ready (/tmp/device-ready) and keep running (docker exec ... adb shell).
 #   ids       boot, apply the device identity below and print what Android reports. Exit 0 = all took.
 #
 # Device identity (any command that boots): random per container start unless set.
@@ -46,6 +48,8 @@ WORK=${WORK:-/work}
 OUT=$WORK/out
 CAM_SIZE=${CAM_SIZE:-800}
 CAM_CANVAS=${CAM_CANVAS:-2000}
+CAM_CANVAS_W=${CAM_CANVAS_W:-$CAM_CANVAS}
+CAM_CANVAS_H=${CAM_CANVAS_H:-$CAM_CANVAS}
 CAM_XOFF=${CAM_XOFF:--447}
 BUTTONS=${BUTTONS:-Next|Accept|Accept &amp; continue|Continue|Agree|I agree|OK|Done}
 SCANNER=dev.mdmready.qrscan
@@ -368,7 +372,7 @@ start_emu() {
     fi
     local cam=emulated
     if [ -f "$WORK/qr.png" ]; then
-        java -Djava.awt.headless=true -cp "$MT" Pad "$WORK/qr.png" /tmp/qrpad.png "$CAM_SIZE" "$CAM_CANVAS" "$CAM_CANVAS" "$CAM_XOFF" || exit 2
+        java -Djava.awt.headless=true -cp "$MT" Pad "$WORK/qr.png" /tmp/qrpad.png "$CAM_SIZE" "$CAM_CANVAS_W" "$CAM_CANVAS_H" "$CAM_XOFF" || exit 2
         cam=imagefile:/tmp/qrpad.png
     fi
     # once per container start (restarts keep the identity); fills in whatever was not set
@@ -503,6 +507,47 @@ report() {
     $A logcat -d > "$OUT/logcat.txt" 2>/dev/null
     grep -E 'ManagedProvisioning' "$OUT/logcat.txt" | grep -iE 'download|checksum|install|success|complete|error|fail' | tail -8 | cut -c1-200
     grep -iE 'GET_PROVISIONING_MODE|onEnabled' "$OUT/logcat.txt" | tail -4 | cut -c1-200
+}
+
+# Scan /work/qr.png with the test scanner app (it is on the back camera since boot); the decoded text
+# goes to $OUT/decoded.json. $OUT/camera-frame.png is what the camera delivered, for debugging;
+# FRAME_LOG=1 also prints it base64-encoded to the log (for CI, where files are hard to reach).
+scan_qr() {
+    local ok=0
+    log "scan with the test scanner app"
+    $A shell pm grant $SCANNER android.permission.CAMERA
+    $A shell am force-stop $SCANNER
+    $A logcat -c
+    $A shell am start -n $SCANNER/.ScanActivity >/dev/null
+    for _ in $(seq 1 45); do
+        sleep 2
+        $A logcat -d -s QRSCAN | grep -q RESULT && { ok=1; break; }
+    done
+    $A logcat -d -s QRSCAN | grep -E 'preview|luma|saved' | tail -6 | cut -c1-200
+    $A shell "cat /data/data/$SCANNER/files/frame.png > /data/local/tmp/frame.png" 2>/dev/null
+    $A exec-out cat /data/local/tmp/frame.png > "$OUT/camera-frame.png" 2>/dev/null
+    if [ "${FRAME_LOG:-0}" = 1 ] && [ -s "$OUT/camera-frame.png" ]; then
+        echo "-----BEGIN CAMERA FRAME-----"
+        base64 -w 0 "$OUT/camera-frame.png"
+        echo
+        echo "-----END CAMERA FRAME-----"
+    fi
+    [ "$ok" = 1 ] || fail "scanner did not decode the QR in 90 s (camera picture: $OUT/camera-frame.png)"
+    $A shell "cat /data/data/$SCANNER/files/qr.txt > /data/local/tmp/qr.json"
+    $A exec-out cat /data/local/tmp/qr.json > "$OUT/decoded.json"
+    $A shell am force-stop $SCANNER
+    log "decoded $(wc -c < "$OUT/decoded.json") bytes"
+}
+
+# Scan only: boot with /work/qr.png on the camera, decode it, compare with /work/qr.json if present.
+cmd_scan() {
+    [ -f "$WORK/qr.png" ] || { log "need $WORK/qr.png"; exit 2; }
+    mkdir -p "$OUT"
+    start_emu
+    scan_qr
+    check_decoded
+    log "PASS: QR decoded"
+    stop_emu
 }
 
 check_decoded() {
@@ -660,20 +705,7 @@ cmd_e2e() {
     start_emu
     serve_agent
     reset_device
-    log "scan with the test scanner app"
-    $A shell pm grant $SCANNER android.permission.CAMERA
-    $A shell am force-stop $SCANNER
-    $A logcat -c
-    $A shell am start -n $SCANNER/.ScanActivity >/dev/null
-    for _ in $(seq 1 30); do
-        sleep 2
-        $A logcat -d -s QRSCAN | grep -q RESULT && break
-    done
-    $A logcat -d -s QRSCAN | grep -q RESULT || fail "scanner did not decode the QR in 60 s"
-    $A shell "cat /data/data/$SCANNER/files/qr.txt > /data/local/tmp/qr.json"
-    $A exec-out cat /data/local/tmp/qr.json > "$OUT/decoded.json"
-    $A shell am force-stop $SCANNER
-    log "decoded $(wc -c < "$OUT/decoded.json") bytes"
+    scan_qr
     check_decoded
     read_dpc "$OUT/decoded.json"
     log "provision, expecting Device Owner $DPC"
@@ -724,13 +756,15 @@ case "$CMD" in
     bake-builtin) cmd_bake && cmd_bake_sw ;;
     e2e) cmd_e2e ;;
     e2e-sw) cmd_e2e_sw ;;
+    scan) cmd_scan ;;
     ids) cmd_ids ;;
     start)
         start_emu
-        wait_imei
         serve_agent
+        # reset applies the guest IMEI and build props, restarts, and waits for the IMEI
+        reset_device
         log "running and ready (/tmp/device-ready); docker exec -it <container> adb shell"
         tail -f /tmp/emulator.log
         ;;
-    *) echo "usage: emu.sh bake|bake-sw|bake-builtin|e2e|e2e-sw|start|ids"; exit 2 ;;
+    *) echo "usage: emu.sh bake|bake-sw|bake-builtin|e2e|e2e-sw|scan|start|ids"; exit 2 ;;
 esac

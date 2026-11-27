@@ -52,6 +52,28 @@ jobs:
           # and once with random values
           docker run --rm --device /dev/kvm --cap-add NET_ADMIN --sysctl net.ipv6.conf.all.disable_ipv6=0 mdm-emu:ready ids
 
+      - name: Scan a dense QR (version 23, 109 modules, like a real enrolment QR)
+        run: |
+          mkdir -p scan-work
+          cp examples/qr-dense.png scan-work/qr.png
+          cp examples/qr-dense.json scan-work/qr.json
+          docker run --rm --device /dev/kvm --cap-add NET_ADMIN --sysctl net.ipv6.conf.all.disable_ipv6=0 \
+            -e FRAME_LOG=1 -v "$PWD/scan-work:/work" mdm-emu:ready scan
+
+      - name: start becomes ready (identity applied, IMEI reported)
+        run: |
+          docker run -d --name ready --device /dev/kvm --cap-add NET_ADMIN --sysctl net.ipv6.conf.all.disable_ipv6=0 \
+            -e DEVICE_IMEI=356938035643809 mdm-emu:ready start
+          for i in $(seq 1 60); do
+            docker exec ready test -f /tmp/device-ready && break
+            docker ps -q -f name=ready | grep -q . || { docker logs ready | tail -30; exit 1; }
+            sleep 10
+          done
+          docker logs ready | tail -15
+          docker exec ready test -f /tmp/device-ready
+          docker exec ready adb -s emulator-5554 shell service call iphonesubinfo 1 s16 root | tr -d "'.[:space:]" | grep -q 356938035643809
+          docker rm -f ready
+
       - name: Keep identity check output
         if: always()
         uses: actions/upload-artifact@v4

@@ -40,15 +40,16 @@ docker run --rm --device /dev/kvm --cap-add NET_ADMIN --sysctl net.ipv6.conf.all
 - The same tags are on Docker Hub as `docker.io/theboyknowsclass/docker-android-mdm-ready`.
 
 - Evidence is written to `work/out/`: `decoded.json`, `logcat.txt`, `screen-N.png`, and `fail.png` on failure.
-- [examples/qr.json](examples/qr.json) shows the payload shape.
+- [examples/qr.json](examples/qr.json) shows the payload shape. [examples/qr-dense.png](examples/qr-dense.png) is a dense version 23 QR (109 modules, like real enrolment QRs) that CI scans on every build.
 
 ### Commands
 
 | Command | What it does |
 |---|---|
 | `e2e` (default) | scan, provision, assert Device Owner |
-| `start` | boot with the QR on the camera and keep running; use `docker exec -it <c> adb shell` |
+| `start` | boot with the QR on the camera, reset to un-set-up, apply the identity, wait for the IMEI (`/tmp/device-ready`) and keep running; use `docker exec -it <c> adb shell` |
 | `ids` | boot, apply the device identity and print what Android reports |
+| `scan` | boot and decode `qr.png` with the test scanner only (compares with `qr.json`); `work/out/camera-frame.png` is what the camera saw |
 | `bake` | one-off image preparation, used by the build |
 
 ### Options (`-e NAME=value`)
@@ -59,6 +60,8 @@ docker run --rm --device /dev/kvm --cap-add NET_ADMIN --sysctl net.ipv6.conf.all
 | `CAM_SIZE` | `800` | QR size on the camera canvas |
 | `CAM_CANVAS` | `2000` | camera canvas size |
 | `CAM_XOFF` | `-447` | x offset (the emulator's image camera is rotated and off centre) |
+| `CAM_CANVAS_W` / `CAM_CANVAS_H` | `CAM_CANVAS` | camera canvas width / height separately |
+| `FRAME_LOG` | `0` | `1` = also print the camera frame base64-encoded in the log (CI) |
 
 ### Device identity
 
