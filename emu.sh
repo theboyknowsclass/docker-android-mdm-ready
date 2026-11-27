@@ -16,12 +16,15 @@
 # Device identity (any command that boots): random per container start unless set.
 #   DEVICE_SERIAL      serial number (Build.getSerial / ro.serialno), 1-16 letters and digits
 #   DEVICE_IMEI        15 digits; random ones get a valid Luhn check digit
+#   DEVICE_IMEI_TAC    8 digits: type allocation code for random IMEIs (default 35 + 6 random digits)
 #   DEVICE_SSAID_KEY   64 hex chars: the seed Android derives every app's ANDROID_ID from
 #                      (same key + same app = same ANDROID_ID)
 #   DEVICE_PHONE       SIM phone number (MSISDN), up to 11 digits, optional leading +
 #   DEVICE_IMSI        15 digits; random ones keep the emulator's 310260 (MCC 310, MNC 260)
 #   DEVICE_ICCID       SIM serial, 19-20 digits; random ones are 89 + digits + Luhn check digit
 #   DEVICE_WIFI_MAC    wlan0 MAC, aa:bb:cc:dd:ee:ff; random ones are locally administered unicast
+#   DEVICE_MODEL       Build.MODEL (ro.product*.model), default "Pixel 6" (the AVD is a pixel_6)
+#   DEVICE_MANUFACTURER  Build.MANUFACTURER and BRAND (ro.product*.manufacturer, *.brand lower case), default Google
 #   DEVICE_BUILD_DISPLAY  Build.DISPLAY (ro.build.display.id), 1-40 chars: letters, digits, space . _ -
 #                      default <ro.build.id> (as on user builds); the stock value is 63 chars, which server
 #                      schemas that cap it at 40 reject
@@ -59,6 +62,7 @@ SYSIMG_DIR=${SYSIMG_DIR:-/opt/android/system-images/android-34/google_apis/x86_6
 ICC_PROFILE=$SYSIMG_DIR/data/misc/modem_simulator/iccprofile_for_sim0.xml
 
 rand_hex() { head -c "$1" /dev/urandom | od -An -tx1 | tr -d ' \n'; }
+rand_upper() { head -c 512 /dev/urandom | LC_ALL=C tr -dc 'A-Z0-9' | head -c "$1"; }
 rand_digits() { od -An -tu1 -N"$1" /dev/urandom | tr -s ' ' '\n' | grep . | awk '{printf "%d", $1 % 10}'; }
 
 luhn() {
@@ -72,10 +76,13 @@ luhn() {
 }
 
 pick_ids() {
-    if [ -z "${DEVICE_SERIAL:-}" ]; then DEVICE_SERIAL=MDMR$(rand_hex 6 | tr a-f A-F); fi
+    # Pixel-style serial: 14 upper-case letters/digits
+    if [ -z "${DEVICE_SERIAL:-}" ]; then DEVICE_SERIAL=$(rand_digits 5)FD$(rand_upper 7); fi
     if [ -z "${DEVICE_IMEI:-}" ]; then
         local body
-        body=35$(rand_digits 12)
+        # TAC (first 8 digits): DEVICE_IMEI_TAC if set, else 35 + 6 random digits
+        [ -z "${DEVICE_IMEI_TAC:-}" ] || [[ $DEVICE_IMEI_TAC =~ ^[0-9]{8}$ ]] || { log "DEVICE_IMEI_TAC must be 8 digits"; exit 2; }
+        body=${DEVICE_IMEI_TAC:-35$(rand_digits 6)}$(rand_digits 6)
         DEVICE_IMEI=$body$(luhn "$body")
     fi
     if [ -z "${DEVICE_SSAID_KEY:-}" ]; then DEVICE_SSAID_KEY=$(rand_hex 32); fi
@@ -98,11 +105,15 @@ pick_ids() {
     [[ $DEVICE_IMSI =~ ^[0-9]{15}$ ]] || { log "DEVICE_IMSI must be 15 digits"; exit 2; }
     [[ $DEVICE_ICCID =~ ^[0-9]{19,20}$ ]] || { log "DEVICE_ICCID must be 19-20 digits"; exit 2; }
     [[ $DEVICE_WIFI_MAC =~ ^[0-9A-Fa-f]{2}(:[0-9A-Fa-f]{2}){5}$ ]] || { log "DEVICE_WIFI_MAC must be aa:bb:cc:dd:ee:ff"; exit 2; }
+    DEVICE_MODEL=${DEVICE_MODEL:-Pixel 6}
+    DEVICE_MANUFACTURER=${DEVICE_MANUFACTURER:-Google}
+    [[ $DEVICE_MODEL =~ ^[A-Za-z0-9\ ._-]{1,40}$ ]] || { log "DEVICE_MODEL must be 1-40 letters, digits, spaces or . _ -"; exit 2; }
+    [[ $DEVICE_MANUFACTURER =~ ^[A-Za-z0-9\ ._-]{1,40}$ ]] || { log "DEVICE_MANUFACTURER must be 1-40 letters, digits, spaces or . _ -"; exit 2; }
     [ -z "${DEVICE_BUILD_DISPLAY:-}" ] || [[ $DEVICE_BUILD_DISPLAY =~ ^[A-Za-z0-9\ ._-]{1,40}$ ]] \
         || { log "DEVICE_BUILD_DISPLAY must be 1-40 letters, digits, spaces or . _ -"; exit 2; }
     DEVICE_SSAID_KEY=$(tr a-f A-F <<<"$DEVICE_SSAID_KEY")
     DEVICE_WIFI_MAC=$(tr A-F a-f <<<"$DEVICE_WIFI_MAC")
-    export DEVICE_SERIAL DEVICE_IMEI DEVICE_SSAID_KEY DEVICE_PHONE DEVICE_IMSI DEVICE_ICCID DEVICE_WIFI_MAC DEVICE_BUILD_DISPLAY
+    export DEVICE_SERIAL DEVICE_IMEI DEVICE_SSAID_KEY DEVICE_PHONE DEVICE_IMSI DEVICE_ICCID DEVICE_WIFI_MAC DEVICE_BUILD_DISPLAY DEVICE_MODEL DEVICE_MANUFACTURER
     log "identity: serial=$DEVICE_SERIAL imei=$DEVICE_IMEI phone=$DEVICE_PHONE imsi=$DEVICE_IMSI iccid=$DEVICE_ICCID mac=$DEVICE_WIFI_MAC ssaid_key=${DEVICE_SSAID_KEY:0:8}..."
 }
 
@@ -227,20 +238,28 @@ PY2
     [ "$hits" -gt 0 ] || { log "no default IMEI found in the guest RIL libraries (system image changed?)"; exit 2; }
 }
 
-# Build.DISPLAY: the stock ro.build.display.id is 63 characters, longer than some server schemas
-# accept (40). Set a short one in every build.prop that defines it; it takes effect on the next boot.
-# Needs the remount done by patch_guest_imei.
-set_build_display() {
-    local want=${DEVICE_BUILD_DISPLAY:-}
+# Build.DISPLAY, MODEL, MANUFACTURER, BRAND: make the device look like a real phone. The stock
+# ro.build.display.id is 63 characters, longer than some server schemas accept (40), and the model is
+# sdk_gphone64_x86_64. Every build.prop that defines a key gets the new value; it takes effect on the
+# next boot. Needs the remount done by patch_guest_imei.
+set_build_props() {
+    local want=${DEVICE_BUILD_DISPLAY:-} brand
     if [ -z "$want" ]; then
         want=$($A shell getprop ro.build.id | tr -d '\r')
     fi
     [ ${#want} -le 40 ] || { log "build display id '$want' is longer than 40 characters"; exit 2; }
     DEVICE_BUILD_DISPLAY=$want
     export DEVICE_BUILD_DISPLAY
-    $A shell "n=0; for f in /system/build.prop /system_ext/etc/build.prop /product/etc/build.prop /vendor/build.prop /odm/etc/build.prop /vendor/odm/etc/build.prop; do if [ -f \$f ] && grep -q '^ro.build.display.id=' \$f; then sed -i 's/^ro.build.display.id=.*/ro.build.display.id=$want/' \$f && n=\$((n+1)); fi; done; echo \$n" \
+    brand=$(tr A-Z a-z <<<"$DEVICE_MANUFACTURER")
+    # key regex -> value; ro.product.model and ro.product.<partition>.model alike
+    $A shell "n=0; for f in /system/build.prop /system_ext/etc/build.prop /product/etc/build.prop /vendor/build.prop /odm/etc/build.prop /vendor/odm/etc/build.prop; do [ -f \$f ] || continue; \
+        grep -q '^ro.build.display.id=' \$f && n=\$((n+1)); \
+        sed -i -e 's/^ro.build.display.id=.*/ro.build.display.id=$want/' \
+               -e 's/^\\(ro.product\\.\\([a-z_]*\\.\\)\\{0,1\\}model\\)=.*/\\1=$DEVICE_MODEL/' \
+               -e 's/^\\(ro.product\\.\\([a-z_]*\\.\\)\\{0,1\\}manufacturer\\)=.*/\\1=$DEVICE_MANUFACTURER/' \
+               -e 's/^\\(ro.product\\.\\([a-z_]*\\.\\)\\{0,1\\}brand\\)=.*/\\1=$brand/' \$f; done; echo \$n" \
         | tr -d '\r' | grep -q '^[1-9]' || { log "ro.build.display.id not found in any build.prop"; exit 2; }
-    log "build display id: $want"
+    log "build props: display=$want model=$DEVICE_MODEL manufacturer=$DEVICE_MANUFACTURER brand=$brand"
 }
 
 # Android derives each app's ANDROID_ID from a per-user key in settings_ssaid.xml. Writing a new key
@@ -379,7 +398,7 @@ reset_device() {
     $A shell 'rm -f /data/system/users/0/settings_global.xml /data/system/users/0/settings_secure.xml /data/system/users/0/settings_system.xml /data/system/users/0/settings_ssaid.xml /data/system/device_policies.xml /data/system/device_policy_state.xml /data/system/device_owner_2.xml'
     write_ssaid
     patch_guest_imei
-    set_build_display
+    set_build_props
     restart_emu
     if [ -n "$DPC" ]; then
         $A shell pm uninstall "${DPC%%/*}" >/dev/null 2>&1
@@ -552,10 +571,12 @@ cmd_ids() {
     start_emu
     reset_device
     sleep 15
-    local ok=0 serial mac sim imei imsi at_imei display
+    local ok=0 serial mac sim imei imsi at_imei display model maker
     sub() { $A shell service call iphonesubinfo "$1" s16 root 2>/dev/null | grep -oE "'[^']*'" | tr -d "'.[:space:]"; }
     serial=$($A shell getprop ro.serialno | tr -d '\r')
     display=$($A shell getprop ro.build.display.id | tr -d '\r')
+    model=$($A shell getprop ro.product.model | tr -d '\r')
+    maker=$($A shell getprop ro.product.manufacturer | tr -d '\r')
     mac=$($A shell cat /sys/class/net/wlan0/address | tr -d '\r')
     sim=$($A shell content query --uri content://telephony/siminfo --projection icc_id:number 2>/dev/null | tr -d '\r')
     imei=$(sub 1)
@@ -580,11 +601,13 @@ PY2
 )
     $A shell getprop > "$OUT/getprop.txt" 2>&1
     $A logcat -d > "$OUT/logcat.txt" 2>&1
-    log "Android reports: serial=$serial display=$display wifi_mac=$mac imei=$imei (modem: $at_imei) imsi=$imsi sim: $sim"
+    log "Android reports: serial=$serial display=$display model=$model manufacturer=$maker wifi_mac=$mac imei=$imei (modem: $at_imei) imsi=$imsi sim: $sim"
     check() { if [ "$2" = 1 ]; then log "$1 OK"; else log "$1 NOT applied"; ok=1; fi; }
     check serial "$([ "$serial" = "$DEVICE_SERIAL" ] && echo 1)"
     check wifi_mac "$([ "$mac" = "$DEVICE_WIFI_MAC" ] && echo 1)"
     check build_display "$([ "$display" = "$DEVICE_BUILD_DISPLAY" ] && [ ${#display} -le 40 ] && echo 1)"
+    check model "$([ "$model" = "$DEVICE_MODEL" ] && echo 1)"
+    check manufacturer "$([ "$maker" = "$DEVICE_MANUFACTURER" ] && echo 1)"
     check imei "$([ "$imei" = "$DEVICE_IMEI" ] && echo 1)"
     check imsi "$([ "$imsi" = "$DEVICE_IMSI" ] && echo 1)"
     check iccid "$(grep -q "icc_id=$DEVICE_ICCID" <<<"$sim" && echo 1)"

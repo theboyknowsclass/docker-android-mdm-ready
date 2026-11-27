@@ -63,13 +63,16 @@ Each container start gets a new random identity, so every run enrols as a new de
 
 | Name | Format | Random default |
 |---|---|---|
-| `DEVICE_SERIAL` | 1-16 letters/digits (`Build.getSerial()`, `ro.serialno`), so `S` + serial fits a 17-character device id (`T?[a-zA-Z0-9]{0,17}`) | `MDMR` + 12 hex (16 characters) |
+| `DEVICE_SERIAL` | 1-16 letters/digits (`Build.getSerial()`, `ro.serialno`), so `S` + serial fits a 17-character device id (`T?[a-zA-Z0-9]{0,17}`) | 14 upper-case letters/digits, Pixel style (e.g. `28041FDH2003K7`) |
 | `DEVICE_IMEI` | 15 digits | `35` + 12 random + Luhn check digit |
+| `DEVICE_IMEI_TAC` | 8 digits: type allocation code (model id) for random IMEIs | `35` + 6 random digits |
 | `DEVICE_SSAID_KEY` | 64 hex | random |
 | `DEVICE_PHONE` | SIM phone number, 3-11 digits, optional `+` (the emulator ignores longer ones) | `1555` + 7 digits |
 | `DEVICE_IMSI` | 15 digits | `310260` + 9 digits (keeps the emulator's MCC 310 / MNC 260) |
 | `DEVICE_ICCID` | 19-20 digits | `8901` + 15 digits + Luhn check digit |
 | `DEVICE_WIFI_MAC` | `aa:bb:cc:dd:ee:ff` | `02:` + 5 random bytes (locally administered) |
+| `DEVICE_MODEL` | 1-40 letters, digits, spaces or `. _ -` (`Build.MODEL`) | `Pixel 6` (the AVD is a `pixel_6`) |
+| `DEVICE_MANUFACTURER` | same format (`Build.MANUFACTURER`; `Build.BRAND` is the lower-case form) | `Google` |
 | `DEVICE_BUILD_DISPLAY` | 1-40 letters, digits, spaces or `. _ -` (`Build.DISPLAY`, `ro.build.display.id`). The stock value is 63 characters, too long for schemas that cap it at 40 | `<ro.build.id>`, as on real user builds, e.g. `UE1A.230829.050` |
 
 On Android 8+ `ANDROID_ID` differs per app; Android derives it from `DEVICE_SSAID_KEY`, so the same key and the same app give the same `ANDROID_ID`.
