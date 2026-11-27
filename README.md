@@ -15,7 +15,7 @@ Built on [budtmo/docker-android](https://github.com/budtmo/docker-android) (`emu
 5. A script taps through the consent screens.
 6. Android's ManagedProvisioning downloads the DPC, checks its checksum and installs it.
 7. The run checks that the DPC named in the QR is Device Owner.
-8. It sends `PROVISION_FINALIZATION` (the Setup Wizard's job) and taps through the DPC's own screens until the DPC finishes, then passes (exit code 0).
+8. Once ManagedProvisioning has left the foreground it sends `PROVISION_FINALIZATION` (the Setup Wizard's job), taps through the DPC's own screens (granting "modify system settings" if the DPC asks) until the DPC leaves the foreground, then passes (exit code 0).
 
 No Google proprietary APKs are included.
 
@@ -63,7 +63,9 @@ docker run --rm --device /dev/kvm --cap-add NET_ADMIN --sysctl net.ipv6.conf.all
 | `CAM_XOFF` | `-447` | x offset (the emulator's image camera is rotated and off centre) |
 | `CAM_CANVAS_W` / `CAM_CANVAS_H` | `CAM_CANVAS` | camera canvas width / height separately |
 | `FRAME_LOG` | `0` | `1` = also print the camera frame base64-encoded in the log (CI) |
-| `DPC_ROUNDS` | `8` | most DPC screens `e2e` taps through after finalization (`work/out/dpc-<n>.png`) |
+| `FINALIZE` | `1` | `0` = stop at Device Owner (no `PROVISION_FINALIZATION`, no DPC screens) |
+| `DPC_ROUNDS` | `20` | most screens `e2e` handles while finalizing (`work/out/final-<n>.png`); the run fails if the DPC is still in front after them |
+| `DPC_BUTTONS` | `NEXT`, `CONTINUE`, `Grant Permission`, `Allow`, `CONFIRM & <WORD>`, `ENROL`/`ENROLL`, `FINISH` (and other cases) | extra button labels tapped on the DPC's screens, as an extended regex |
 | `KEEP_RUNNING` | `0` | `1` = after `e2e` passes, keep the enrolled device running (`/tmp/device-ready`) instead of stopping |
 
 ### Device identity

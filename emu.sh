@@ -52,6 +52,8 @@ CAM_CANVAS_W=${CAM_CANVAS_W:-$CAM_CANVAS}
 CAM_CANVAS_H=${CAM_CANVAS_H:-$CAM_CANVAS}
 CAM_XOFF=${CAM_XOFF:--447}
 BUTTONS=${BUTTONS:-Next|Accept|Accept &amp; continue|Continue|Agree|I agree|OK|Done}
+# extra buttons tapped on the DPC's own screens after PROVISION_FINALIZATION
+DPC_BUTTONS=${DPC_BUTTONS:-NEXT|CONTINUE|Grant Permission|GRANT PERMISSION|Allow|ALLOW|CONFIRM &(amp;)? [A-Z]+|Confirm &(amp;)? [a-z]+|ENROL|Enrol|ENROLL|Enroll|FINISH|Finish}
 SCANNER=dev.mdmready.qrscan
 SETUPWIZARD=com.google.android.setupwizard
 A="adb -s emulator-5554"
@@ -496,48 +498,38 @@ owner_ok() {
     $A shell dumpsys device_policy 2>/dev/null | grep -A1 'Device Owner:' | grep -q "admin=ComponentInfo{$DPC}"
 }
 
-# Up to $1 rounds: stop once $DPC is Device Owner, otherwise tap the first button matching $BUTTONS.
-# Without the Setup Wizard nothing sends PROVISION_FINALIZATION after provisioning, so the DPC never
-# gets ADMIN_POLICY_COMPLIANCE (where DPCs usually register). Send it, then tap through the DPC's
-# own screens until it is no longer in front (or DPC_ROUNDS rounds pass).
+# Laptop-tested against a real enrolment server: ManagedProvisioning screens, then (once it has left
+# the foreground) PROVISION_FINALIZATION, then the DPC's own screens until it leaves the foreground.
+# uiautomator writes "&" as "&amp;", so the patterns accept both.
 finalize_provisioning() {
-    local pkg=${DPC%%/*} r ui b top idle=0
-    # The DPC may send the user to Settings for "modify system settings": grant it up front.
-    $A shell appops set "$pkg" WRITE_SETTINGS allow 2>/dev/null
-    # Sent while ManagedProvisioning still shows its screens, the intent is ignored: wait until it
-    # has left the foreground (up to 2 min).
-    for r in $(seq 1 60); do
-        $A shell dumpsys activity activities 2>/dev/null | grep -E 'mResumedActivity|topResumedActivity' | head -1 \
-            | grep -q com.android.managedprovisioning || break
-        sleep 2
-    done
-    log "send PROVISION_FINALIZATION"
-    $A shell am start -a android.app.action.PROVISION_FINALIZATION 2>&1 | tail -2
-    sleep 5
-    for r in $(seq 1 "${DPC_ROUNDS:-8}"); do
-        top=$($A shell dumpsys activity activities 2>/dev/null | grep -E 'mResumedActivity|topResumedActivity' | head -1)
-        if grep -q 'com.android.settings' <<<"$top"; then
-            # Settings opened by the DPC (e.g. WRITE_SETTINGS): grant it and go back to the DPC.
-            idle=0
-            $A shell appops set "$pkg" WRITE_SETTINGS allow 2>/dev/null
-            $A exec-out screencap -p > "$OUT/dpc-$r-settings.png" 2>/dev/null
-            $A shell input keyevent KEYCODE_BACK
-            log "DPC round $r: Settings in front, granted WRITE_SETTINGS and pressed Back"
-            sleep 5
-            continue
-        fi
-        if ! grep -q "$pkg" <<<"$top"; then
-            idle=$((idle + 1))
-            [ "$idle" -ge 2 ] && { log "DPC is no longer in front: finished"; return 0; }
-            sleep 5
-            continue
-        fi
-        idle=0
+    local rounds=${DPC_ROUNDS:-20} r ui b top sent=0 pkg=${DPC%%/*}
+    for r in $(seq 1 "$rounds"); do
+        top=$($A shell dumpsys activity activities 2>/dev/null | grep -m1 topResumedActivity | grep -oE 'u0 [^ /]+' | cut -c4-)
+        case "$top" in
+            com.android.settings)
+                # the DPC asked for "modify system settings"
+                $A shell appops set "$pkg" WRITE_SETTINGS allow
+                $A shell input keyevent KEYCODE_BACK
+                log "granted $pkg WRITE_SETTINGS"
+                sleep 5
+                continue ;;
+            "$pkg" | com.android.managedprovisioning) ;;
+            *)
+                if [ "$sent" = 0 ]; then
+                    log "finalize provisioning (the Setup Wizard's last step)"
+                    $A shell am start -a android.app.action.PROVISION_FINALIZATION >/dev/null 2>&1
+                    sent=1
+                    sleep 5
+                    continue
+                fi
+                log "DPC setup done (top: ${top:-none})"
+                return 0 ;;
+        esac
         $A shell uiautomator dump /sdcard/ui.xml >/dev/null 2>&1
         ui=$($A exec-out cat /sdcard/ui.xml 2>/dev/null)
-        log "DPC screen $r: $(grep -oE 'text="[^"]+"' <<<"$ui" | tr '\n' ' ' | cut -c1-200)"
-        $A exec-out screencap -p > "$OUT/dpc-$r.png" 2>/dev/null
-        b=$(grep -oE "text=\"($BUTTONS)\"[^>]*bounds=\"\[[0-9]+,[0-9]+\]\[[0-9]+,[0-9]+\]\"" <<<"$ui" | head -1 | grep -oE '\[[0-9]+,[0-9]+\]\[[0-9]+,[0-9]+\]')
+        log "${top##*.} screen $r: $(grep -oE 'text="[^"]+"' <<<"$ui" | tr '\n' ' ' | cut -c1-200)"
+        $A exec-out screencap -p > "$OUT/final-$r.png" 2>/dev/null
+        b=$(grep -oE "text=\"($BUTTONS|$DPC_BUTTONS)\"[^>]*bounds=\"\[[0-9]+,[0-9]+\]\[[0-9]+,[0-9]+\]\"" <<<"$ui" | head -1 | grep -oE '\[[0-9]+,[0-9]+\]\[[0-9]+,[0-9]+\]')
         if [ -n "$b" ]; then
             set -- $(grep -oE '[0-9]+' <<<"$b")
             $A shell input tap $(( ($1 + $3) / 2 )) $(( ($2 + $4) / 2 ))
@@ -545,7 +537,8 @@ finalize_provisioning() {
         fi
         sleep 8
     done
-    log "DPC still in front after ${DPC_ROUNDS:-8} rounds (continuing)"
+    log "provisioning or DPC setup still in front after $rounds rounds"
+    return 1
 }
 
 # KEEP_RUNNING=1: leave the emulator up after a passing e2e (the DPC can register and receive
@@ -788,7 +781,7 @@ cmd_e2e() {
     $A shell 'CLASSPATH=/data/local/tmp/prov.dex app_process / Prov /data/local/tmp/qr.json' | grep -q 'result=0' || fail "provisioning intent refused"
     sleep 10
     tap_through 10 || fail "$DPC is not Device Owner"
-    finalize_provisioning
+    if [ "${FINALIZE:-1}" = 1 ]; then finalize_provisioning || fail "DPC setup did not finish"; fi
     report
     log "PASS: $DPC is Device Owner"
     keep_or_stop
