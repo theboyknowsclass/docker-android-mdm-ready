@@ -23,15 +23,18 @@ No Google proprietary APKs are included.
 The host needs KVM (`/dev/kvm`). On Windows, use WSL2 and run `modprobe kvm_intel` (or `kvm_amd`).
 
 ```sh
-docker pull ghcr.io/theboyknowsclass/docker-android-mdm-ready:latest
+docker pull ghcr.io/theboyknowsclass/docker-android-mdm-ready:<sha>
 
 mkdir work
 cp my-qr.png work/qr.png            # required
 cp my-qr.json work/qr.json          # optional: expected decoded text, checked against the scan
 cp my-dpc.apk work/agent.apk        # optional: served at http://10.0.2.2:8099/agent.apk
 
-docker run --rm --device /dev/kvm --cap-add NET_ADMIN --sysctl net.ipv6.conf.all.disable_ipv6=0 -v "$PWD/work:/work" ghcr.io/theboyknowsclass/docker-android-mdm-ready:latest e2e
+docker run --rm --device /dev/kvm --cap-add NET_ADMIN --sysctl net.ipv6.conf.all.disable_ipv6=0 -v "$PWD/work:/work" ghcr.io/theboyknowsclass/docker-android-mdm-ready:<sha> e2e
 ```
+
+- Pin a 7-character commit tag (`:<sha>`, e.g. `:8fe8a3d`) in scripts, compose files and CI. Every push to `main` moves `:latest`, so it is only for trying the image out.
+- The same tags are on Docker Hub as `docker.io/theboyknowsclass/docker-android-mdm-ready`.
 
 - Evidence is written to `work/out/`: `decoded.json`, `logcat.txt`, `screen-N.png`, and `fail.png` on failure.
 - [examples/qr.json](examples/qr.json) shows the payload shape.
@@ -91,7 +94,9 @@ docker commit --change 'CMD ["e2e"]' bake mdm-emu:ready
 docker rm bake
 ```
 
-The GitHub Actions workflow does the same thing on every push to `main` and pushes the image to GHCR.
+The GitHub Actions workflow does the same thing on every push to `main` and pushes the image to GHCR (and Docker Hub). Pull requests run the same build, bake and identity check but push nothing.
+
+The base image is pinned by digest in the `Dockerfile`, because `emu.sh` patches emulator binaries that change between base image versions. To move to a newer base, update the digest and let the identity check in CI prove it.
 
 ## Licences
 

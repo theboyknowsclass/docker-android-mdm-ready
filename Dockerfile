@@ -5,7 +5,11 @@
 #
 # The image build needs no KVM. Rooting the system image and disabling GoogleSdkSetup has to run
 # inside a booted emulator, so it is a one-off "bake" run followed by docker commit (see README.md).
-FROM budtmo/docker-android:emulator_14.0
+# Pinned by digest: emu.sh byte-patches the emulator's qemu binary and the guest RIL libraries and
+# tunes the camera offset to this exact emulator, so a moved tag can break every run. To move on,
+# update the digest (docker buildx imagetools inspect budtmo/docker-android:emulator_14.0) and let
+# CI's identity check prove it.
+FROM budtmo/docker-android:emulator_14.0@sha256:99851f85a033a48da8c2cee48ef9a85d1bfad8dd84822f5bc62c01865ce5356f
 
 USER root
 
